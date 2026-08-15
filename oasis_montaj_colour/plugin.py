@@ -40,7 +40,7 @@ TEXT = {
         "import_table": "Importar tabla...",
         "method_group": "3. Distribución",
         "distribution": "Distribución:",
-        "zones": "Number of bins:",
+        "zones": "N\u00famero de intervalos:",
         "rendering": "Representación:",
         "normal_range": "Rango normal:",
         "log_linear": "Log-Linear:",
@@ -54,16 +54,25 @@ TEXT = {
         "preview_tab": "Histograma y cortes",
         "stats_ready": "Pulsa Previsualizar para calcular estadísticas.",
         "zone": "Zona",
-        "minimum_bin": "Minimum",
-        "maximum_bin": "Maximum",
+        "minimum_bin": "M\u00ednimo",
+        "maximum_bin": "M\u00e1ximo",
         "color": "Color",
         "preview": "Previsualizar",
         "continuous": "Continuo (interpolado)",
         "discrete": "Zonas discretas",
-        "linear": "Linear Distribution",
-        "normal": "Normal Distribution",
-        "equal_area": "Equal Area (Histogram) Distribution",
-        "log_method": "Log-Linear Distribution",
+        "apply": "Aplicar",
+        "close": "Cerrar",
+        "palette_classic_geophysics": "Geof\u00edsica cl\u00e1sica",
+        "palette_intense_geophysics": "Geof\u00edsica intensa",
+        "palette_full_spectrum": "Espectro completo",
+        "palette_viridis": "Viridis",
+        "palette_terrain": "Terreno",
+        "palette_blue_white_red": "Anomal\u00edas azul-blanco-rojo",
+        "palette_grayscale": "Escala de grises",
+        "linear": "Distribuci\u00f3n lineal",
+        "normal": "Distribuci\u00f3n normal",
+        "equal_area": "Distribuci\u00f3n de \u00e1rea igual (histograma)",
+        "log_method": "Distribuci\u00f3n log-lineal",
         "linear_help": "Intervalos uniformes entre mínimo y máximo.",
         "normal_help": "Cortes según media, desviación estándar y rango sigma.",
         "equal_area_help": "Una cantidad similar de píxeles por intervalo.",
@@ -120,6 +129,15 @@ TEXT = {
         "preview": "Preview",
         "continuous": "Continuous (interpolated)",
         "discrete": "Discrete zones",
+        "apply": "Apply",
+        "close": "Close",
+        "palette_classic_geophysics": "Classic geophysics",
+        "palette_intense_geophysics": "Intense geophysics",
+        "palette_full_spectrum": "Full spectrum",
+        "palette_viridis": "Viridis",
+        "palette_terrain": "Terrain",
+        "palette_blue_white_red": "Blue-white-red anomalies",
+        "palette_grayscale": "Grayscale",
         "linear": "Linear Distribution",
         "normal": "Normal Distribution",
         "equal_area": "Equal Area (Histogram) Distribution",
@@ -169,6 +187,16 @@ PALETTES = {
     "Escala de grises": make_palette(["#000000", "#ffffff"]),
 }
 
+PALETTE_TEXT_KEYS = (
+    "palette_classic_geophysics",
+    "palette_intense_geophysics",
+    "palette_full_spectrum",
+    "palette_viridis",
+    "palette_terrain",
+    "palette_blue_white_red",
+    "palette_grayscale",
+)
+
 
 class ColourDialog(QDialog):
     def __init__(self, iface, parent=None):
@@ -208,8 +236,9 @@ class ColourDialog(QDialog):
         self.data_group.setLayout(data_form)
 
         self.palette_combo, self.reverse_check = QComboBox(), QCheckBox()
-        self.palette_combo.addItems(PALETTES)
-        self.palette_combo.currentTextChanged.connect(self.select_palette)
+        for index, key in enumerate(PALETTE_TEXT_KEYS):
+            self.palette_combo.addItem(self.t(key), index)
+        self.palette_combo.currentIndexChanged.connect(self.select_palette)
         self.reverse_check.toggled.connect(self.update_ramp_preview)
         self.import_button = QPushButton()
         self.import_button.clicked.connect(self.import_palette)
@@ -343,8 +372,13 @@ class ColourDialog(QDialog):
         self.language_combo.setCurrentIndex(max(0, self.language_combo.findData(self.language)))
         self._building_language = False
 
-        palette = self.settings.value(f"{SETTINGS_PREFIX}/palette", "Geofísica clásica")
-        index = self.palette_combo.findText(palette)
+        palette = self.settings.value(f"{SETTINGS_PREFIX}/palette", 0)
+        try:
+            index = self.palette_combo.findData(int(palette))
+        except (TypeError, ValueError):
+            index = self.palette_combo.findText(palette)
+        if index < 0 and palette in PALETTES:
+            index = list(PALETTES).index(palette)
         if index >= 0:
             self.palette_combo.setCurrentIndex(index)
         self.reverse_check.setChecked(self.as_bool(self.settings.value(f"{SETTINGS_PREFIX}/reverse", False)))
@@ -371,7 +405,7 @@ class ColourDialog(QDialog):
         if self._building_language:
             return
         self.settings.setValue(f"{SETTINGS_PREFIX}/language", self.language)
-        self.settings.setValue(f"{SETTINGS_PREFIX}/palette", self.palette_combo.currentText())
+        self.settings.setValue(f"{SETTINGS_PREFIX}/palette", self.palette_combo.currentData())
         self.settings.setValue(f"{SETTINGS_PREFIX}/reverse", self.reverse_check.isChecked())
         self.settings.setValue(f"{SETTINGS_PREFIX}/method", self.method_combo.currentData())
         self.settings.setValue(f"{SETTINGS_PREFIX}/render", self.render_combo.currentData())
@@ -414,6 +448,8 @@ class ColourDialog(QDialog):
             self.t("zone"), self.t("minimum_bin"), self.t("maximum_bin"), self.t("color")
         ])
         self.preview_button.setText(self.t("preview"))
+        self.buttons.button(QDialogButtonBox.Apply).setText(self.t("apply"))
+        self.buttons.button(QDialogButtonBox.Close).setText(self.t("close"))
         self.update_combo_text(self.method_combo, {
             "linear": self.t("linear"),
             "normal": self.t("normal"),
@@ -427,6 +463,9 @@ class ColourDialog(QDialog):
         self.update_combo_text(self.language_combo, {
             "es": self.t("spanish"),
             "en": self.t("english"),
+        })
+        self.update_combo_text(self.palette_combo, {
+            index: self.t(key) for index, key in enumerate(PALETTE_TEXT_KEYS)
         })
         self.update_controls()
 
@@ -469,9 +508,10 @@ class ColourDialog(QDialog):
         self.minimum_spin.setEnabled(enabled)
         self.maximum_spin.setEnabled(enabled)
 
-    def select_palette(self, name):
-        if name in PALETTES:
-            self.palette_stops = list(PALETTES[name])
+    def select_palette(self, unused=None):
+        index = self.palette_combo.currentData()
+        if isinstance(index, int) and 0 <= index < len(PALETTES):
+            self.palette_stops = list(list(PALETTES.values())[index])
             self.update_ramp_preview()
 
     def active_stops(self):
