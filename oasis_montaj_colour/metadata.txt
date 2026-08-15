@@ -1,0 +1,13 @@
+[general]
+name=Oasis Montaj Colour
+description=Aplica paletas geofísicas RGB y distribuciones por histograma a rásteres.
+version=1.1.0
+qgisMinimumVersion=3.34
+author=Oasis Montaj Colour
+email=
+about=Colorización ráster con interfaz español/inglés, configuración persistente, cuatro distribuciones, zonas configurables, histograma, cortes, límites manuales y tablas RGB.
+category=Raster
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=False
