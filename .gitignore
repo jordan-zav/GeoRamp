@@ -4,3 +4,4 @@ __pycache__/
 
 dist/_package_*/
 dist/_last_stage.txt
+dist/*.zip
