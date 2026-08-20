@@ -1,5 +1,5 @@
 [general]
-name=Oasis Montaj Colour
+name=GeoRamp
 description=Aplica paletas geofísicas RGB y distribuciones por histograma a rásteres.
 version=1.1.0
 qgisMinimumVersion=3.34
@@ -8,10 +8,10 @@ email=jordanzav@gisgeo.dev
 about=Colorización ráster con interfaz español/inglés, configuración persistente, cuatro distribuciones, zonas configurables, histograma, cortes, límites manuales y tablas RGB.
 category=Raster
 icon=icon.svg
-repository=https://github.com/jordan-zav/Oasis-Montaj-Colour
-tracker=https://github.com/jordan-zav/Oasis-Montaj-Colour/issues
-homepage=https://github.com/jordan-zav/Oasis-Montaj-Colour
-tags=raster, color ramp, geophysics, histogram, oasis montaj
+repository=https://github.com/jordan-zav/GeoRamp
+tracker=https://github.com/jordan-zav/GeoRamp/issues
+homepage=https://github.com/jordan-zav/GeoRamp
+tags=raster, color ramp, geophysics, histogram, palette
 experimental=False
 deprecated=False
 hasProcessingProvider=False

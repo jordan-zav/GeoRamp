@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from oasis_montaj_colour.distributions import calculate_values
+from georamp.distributions import calculate_values
 
 
 class DistributionTests(unittest.TestCase):

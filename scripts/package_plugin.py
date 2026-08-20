@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_NAME = "oasis_montaj_colour"
+PLUGIN_NAME = "georamp"
 PLUGIN_DIR = ROOT / PLUGIN_NAME
 
 

@@ -21,12 +21,12 @@ from .distributions import calculate_values
 SAMPLE_SIZE = 250000
 HISTOGRAM_BINS = 256
 DEFAULT_BINS = 39
-SETTINGS_PREFIX = "oasis_montaj_colour"
+SETTINGS_PREFIX = "georamp"
 
 
 TEXT = {
     "es": {
-        "window_title": "Oasis Montaj Colour",
+        "window_title": "GeoRamp",
         "plugin_group": "Plugin",
         "language": "Idioma:",
         "spanish": "Español",
@@ -92,10 +92,10 @@ TEXT = {
         "rgb_range": "RGB debe estar entre 0 y 255.",
         "invalid_positions": "Las posiciones no son válidas.",
         "mixed_format": "Todas las filas deben tener el mismo formato.",
-        "menu": "Oasis Montaj Colour",
+        "menu": "GeoRamp",
     },
     "en": {
-        "window_title": "Oasis Montaj Colour",
+        "window_title": "GeoRamp",
         "plugin_group": "Plugin",
         "language": "Language:",
         "spanish": "Spanish",
@@ -161,7 +161,7 @@ TEXT = {
         "rgb_range": "RGB values must be between 0 and 255.",
         "invalid_positions": "The positions are not valid.",
         "mixed_format": "All rows must use the same format.",
-        "menu": "Oasis Montaj Colour",
+        "menu": "GeoRamp",
     },
 }
 
@@ -714,7 +714,7 @@ def read_palette(path, translate=None):
     return [(p, QColor(round(rgb[0]), round(rgb[1]), round(rgb[2]))) for p, (_, rgb) in zip(positions, rows)]
 
 
-class OasisMontajColourPlugin:
+class GeoRampPlugin:
     def __init__(self, iface):
         self.iface, self.action, self.dialog = iface, None, None
 
