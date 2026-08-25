@@ -11,7 +11,14 @@ Plugin para QGIS 3.34 o superior que aplica rampas RGB y distribuciones estadís
 - Inversión de rampa y límites automáticos o manuales.
 - Sigma configurable para Normal y desplazamiento opcional para Log-Linear.
 - Histograma, estadísticas y tabla de cortes antes de aplicar.
-- Siete rampas integradas, incluida una rampa geofísica clásica de 39 colores.
+- Visor ráster integrado con actualización en tiempo real al cambiar los parámetros.
+- Veintisiete rampas integradas, incluidas rampas geofísicas, científicas, divergentes, topográficas y batimétricas.
+- Buscador y categorías para navegar el catálogo de rampas.
+- Galería permanente y filtrable con muestras visuales de todas las rampas e indicador de la activa.
+- Modo multicapa para aplicar una configuración a varios rásteres seleccionados.
+- Recorte configurable por percentiles para controlar valores extremos.
+- Procesamiento en segundo plano con progreso y cancelación; NoData se excluye de estadísticas e histogramas.
+- Persistencia de la última tabla RGB importada e intercambio de estilos QGIS QML.
 - Importación de archivos CSV, TXT, TBL, ZON, CLR y LUT de texto.
 
 ## Formato de tabla

@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from georamp.distributions import calculate_values
+from georamp.distributions import calculate_values, percentile_range
 
 
 class DistributionTests(unittest.TestCase):
@@ -36,6 +36,22 @@ class DistributionTests(unittest.TestCase):
     def test_invalid_range(self):
         with self.assertRaises(ValueError):
             calculate_values([0, 1], "linear", 1, 1)
+
+    def test_errors_use_interface_translation(self):
+        with self.assertRaisesRegex(ValueError, "Invalid range"):
+            calculate_values(
+                [0, 1], "linear", 1, 1,
+                translate=lambda key: {"invalid_range": "Invalid range"}[key],
+            )
+
+    def test_percentile_range_uses_histogram(self):
+        low, high = percentile_range([1] * 100, 0, 100, 2, 98)
+        self.assertAlmostEqual(low, 2)
+        self.assertAlmostEqual(high, 98)
+
+    def test_percentile_range_rejects_invalid_order(self):
+        with self.assertRaises(ValueError):
+            percentile_range([1, 1], 0, 2, 90, 10)
 
 
 if __name__ == "__main__":

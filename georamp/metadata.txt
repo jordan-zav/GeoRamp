@@ -1,11 +1,11 @@
 [general]
 name=GeoRamp
 description=Aplica paletas geofísicas RGB y distribuciones por histograma a rásteres.
-version=1.1.0
+version=1.4.1
 qgisMinimumVersion=3.34
 author=Jordan Zavaleta
 email=jordanzav@gisgeo.dev
-about=Colorización ráster con interfaz español/inglés, configuración persistente, cuatro distribuciones, zonas configurables, histograma, cortes, límites manuales y tablas RGB.
+about=Colorización ráster bilingüe con 27 rampas visuales, visor en vivo, aplicación múltiple, percentiles, procesamiento cancelable, NoData, tablas RGB y estilos QML.
 category=Raster
 icon=icon.svg
 repository=https://github.com/jordan-zav/GeoRamp
@@ -15,4 +15,4 @@ tags=raster, color ramp, geophysics, histogram, palette
 experimental=False
 deprecated=False
 hasProcessingProvider=False
-changelog=1.1.0 - Interfaz bilingüe, configuración persistente y empaquetado sin cachés. 1.0.0 - Primera versión funcional.
+changelog=1.4.1 - Galería permanente de rampas e indicador de rampa activa. 1.4.0 - Modo multicapa y controles de ventana. 1.3.0 - Visor en tiempo real. 1.2.2 - Leyenda compacta. 1.2.1 - Interfaz en dos columnas. 1.2.0 - Rampas, percentiles, NoData, tareas cancelables y QML. 1.1.0 - Interfaz bilingüe. 1.0.0 - Primera versión funcional.
