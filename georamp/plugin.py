@@ -14,14 +14,14 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import (
     QgsApplication, QgsColorRampLegendNodeSettings, QgsColorRampShader,
     QgsMapLayerType, QgsProject,
-    QgsRasterBandStats, QgsRasterLayer, QgsRasterShader, QgsSettings, QgsTask,
+    QgsRasterLayer, QgsRasterShader, QgsSettings, QgsTask,
     QgsSingleBandPseudoColorRenderer,
 )
 from qgis.gui import QgsMapCanvas, QgsMapToolPan
 
 from .distributions import calculate_values, percentile_range
 
-SAMPLE_SIZE = 250000
+SAMPLE_GRID_SIZE = 512
 HISTOGRAM_BINS = 256
 PERCENTILE_BINS = 1024
 DEFAULT_BINS = 39
@@ -388,6 +388,45 @@ PALETTE_CATEGORIES = {
 CATEGORY_IDS = ("all", "geophysics", "scientific", "diverging", "topographic", "classic", "custom")
 
 
+def sampled_raster_statistics(task, provider, band, extent, invalid_range_message):
+    block = provider.block(band, extent, SAMPLE_GRID_SIZE, SAMPLE_GRID_SIZE)
+    values = []
+    minimum, maximum = math.inf, -math.inf
+    mean, m2, count = 0.0, 0.0, 0
+    for row in range(SAMPLE_GRID_SIZE):
+        if task.isCanceled():
+            return None
+        for column in range(SAMPLE_GRID_SIZE):
+            if block.isNoData(row, column):
+                continue
+            value = float(block.value(row, column))
+            if not math.isfinite(value):
+                continue
+            values.append(value)
+            minimum, maximum = min(minimum, value), max(maximum, value)
+            count += 1
+            delta = value - mean
+            mean += delta / count
+            m2 += delta * (value - mean)
+        task.setProgress(10 + 30 * (row + 1) / SAMPLE_GRID_SIZE)
+    if not count or maximum <= minimum:
+        raise ValueError(invalid_range_message)
+    stddev = math.sqrt(m2 / (count - 1)) if count > 1 else 0.0
+    return values, minimum, maximum, mean, stddev
+
+
+def sampled_histogram(values, minimum, maximum, bins):
+    counts = [0] * bins
+    span = maximum - minimum
+    if not math.isfinite(span) or span <= 0:
+        return counts
+    for value in values:
+        if minimum <= value <= maximum:
+            index = min(bins - 1, max(0, int(((value - minimum) / span) * bins)))
+            counts[index] += 1
+    return counts
+
+
 def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
                         manual_minimum, manual_maximum, use_percentiles,
                         low_percentile, high_percentile, messages):
@@ -397,11 +436,13 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
         raise ValueError(tr("no_raster"))
     provider = layer.dataProvider()
     task.setProgress(10)
-    stats = provider.bandStatistics(
-        band, QgsRasterBandStats.All, layer.extent(), SAMPLE_SIZE
+    sample = sampled_raster_statistics(
+        task, provider, band, layer.extent(), tr("invalid_range")
     )
-    data_minimum, data_maximum = stats.minimumValue, stats.maximumValue
-    if not math.isfinite(data_minimum) or not math.isfinite(data_maximum) or data_maximum <= data_minimum:
+    if sample is None:
+        return None
+    values, data_minimum, data_maximum, mean, stddev = sample
+    if not math.isfinite(data_minimum) or not math.isfinite(data_maximum):
         raise ValueError(tr("invalid_range"))
     if task.isCanceled():
         return None
@@ -410,14 +451,9 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
     minimum = manual_minimum if manual else data_minimum
     maximum = manual_maximum if manual else data_maximum
     if use_percentiles:
-        preliminary = provider.histogram(
-            band, PERCENTILE_BINS, data_minimum, data_maximum,
-            layer.extent(), SAMPLE_SIZE, False
+        preliminary_counts = sampled_histogram(
+            values, data_minimum, data_maximum, PERCENTILE_BINS
         )
-        preliminary_counts = [
-            max(0, int(value)) for value in preliminary.histogramVector
-            if math.isfinite(value)
-        ]
         minimum, maximum = percentile_range(
             preliminary_counts, data_minimum, data_maximum,
             low_percentile, high_percentile, tr,
@@ -428,22 +464,15 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
         return None
     task.setProgress(70)
 
-    histogram = provider.histogram(
-        band, HISTOGRAM_BINS, minimum, maximum,
-        layer.extent(), SAMPLE_SIZE, False
-    )
-    counts = [
-        max(0, int(value)) for value in histogram.histogramVector
-        if math.isfinite(value)
-    ]
+    counts = sampled_histogram(values, minimum, maximum, HISTOGRAM_BINS)
     if not counts or sum(counts) <= 0:
         raise ValueError(tr("histogram_failed"))
     task.setProgress(100)
     return {
         "layer_id": layer_id, "band": band,
         "data_minimum": data_minimum, "data_maximum": data_maximum,
-        "minimum": minimum, "maximum": maximum, "mean": stats.mean,
-        "stddev": stats.stdDev, "counts": counts,
+        "minimum": minimum, "maximum": maximum, "mean": mean,
+        "stddev": stddev, "counts": counts,
         "nodata": provider.sourceNoDataValue(band) if provider.sourceHasNoDataValue(band) else None,
     }
 

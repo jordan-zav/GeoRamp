@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 import { BUILTIN_PALETTES } from './palettes';
 
 export function getWebviewContent(
@@ -14,6 +14,7 @@ export function getWebviewContent(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>GeoRamp - ${escapeHtml(fileName)}</title>
   <style>
     :root {
@@ -166,6 +167,7 @@ export function getWebviewContent(
       border: 1px solid var(--border-color);
       margin-bottom: 4px;
     }
+    .active-ramp-name { font-weight: 600; margin-bottom: 4px; }
     .ramp-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -277,7 +279,22 @@ export function getWebviewContent(
       opacity: 0.9;
       margin-top: 2px;
       font-family: monospace;
+      white-space: pre-line;
     }
+    .status-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+      background: rgba(26, 29, 35, 0.88);
+      color: #fff;
+      z-index: 20;
+      font-size: 13px;
+    }
+    .status-overlay[hidden] { display: none; }
 
     /* Breaks Table */
     .breaks-container {
@@ -354,6 +371,7 @@ export function getWebviewContent(
       <div class="section-card">
         <div class="section-title"><span data-i18n="sec_ramp">2. Rampa de color</span></div>
         <div class="ramp-controls">
+          <div class="active-ramp-name" id="activeRampName"></div>
           <div class="active-ramp-bar" id="activeRampBar"></div>
           <div class="form-row">
             <input type="text" id="rampSearch" placeholder="Buscar rampa..." style="flex: 1;" />
@@ -370,10 +388,15 @@ export function getWebviewContent(
               <option value="diverging" data-i18n="cat_diverging">Divergente</option>
               <option value="topographic" data-i18n="cat_topographic">Topográfica</option>
               <option value="classic" data-i18n="cat_classic">Clásica</option>
+              <option value="custom" data-i18n="cat_custom">Importada</option>
             </select>
           </div>
         </div>
         <div class="ramp-grid" id="rampGrid"></div>
+        <div style="margin-top: 7px;">
+          <button class="btn btn-secondary" id="btnImportRamp" style="width: 100%;" data-i18n="import_ramp">Importar tabla RGB...</button>
+          <input type="file" id="rampFileInput" accept=".csv,.txt,.tbl,.zon,.clr,.lut" hidden />
+        </div>
       </div>
 
       <!-- 3. DISTRIBUCIÓN -->
@@ -461,6 +484,7 @@ export function getWebviewContent(
       <div class="tab-content active" id="viewerTab">
         <div class="viewport" id="viewport">
           <canvas id="rasterCanvas"></canvas>
+          <div class="status-overlay" id="statusOverlay">Cargando GeoTIFF...</div>
           <div class="viewport-overlay" id="viewportOverlay">
             <span id="posOverlay">Píxel: X: - Y: -</span>
             <span id="geoOverlay">Coord: -</span>
@@ -512,6 +536,8 @@ export function getWebviewContent(
         cat_diverging: "Divergente",
         cat_topographic: "Topográfica",
         cat_classic: "Clásica",
+        cat_custom: "Importada",
+        import_ramp: "Importar tabla RGB...",
         sec_method: "3. Distribución",
         distribution: "Distribución:",
         dist_linear: "Linear",
@@ -537,6 +563,20 @@ export function getWebviewContent(
         tbl_min: "Mínimo",
         tbl_max: "Máximo",
         tbl_color: "Color",
+        loading: "Cargando GeoTIFF...",
+        band_word: "Banda",
+        stats_min: "Mín",
+        stats_max: "Máx",
+        stats_mean: "Media",
+        stats_std: "Desv",
+        none: "Ninguno",
+        no_crs: "Sin CRS",
+        pixel: "Píxel",
+        value: "Valor",
+        coord: "Coord",
+        zoom: "Zoom",
+        invalid_ramp: "La tabla RGB no es válida.",
+        imported_ramp: "Rampa importada",
       },
       en: {
         title: "GeoRamp - GeoTIFF Viewer",
@@ -552,6 +592,8 @@ export function getWebviewContent(
         cat_diverging: "Diverging",
         cat_topographic: "Topographic",
         cat_classic: "Classic",
+        cat_custom: "Imported",
+        import_ramp: "Import RGB table...",
         sec_method: "3. Distribution",
         distribution: "Distribution:",
         dist_linear: "Linear",
@@ -577,6 +619,20 @@ export function getWebviewContent(
         tbl_min: "Minimum",
         tbl_max: "Maximum",
         tbl_color: "Colour",
+        loading: "Loading GeoTIFF...",
+        band_word: "Band",
+        stats_min: "Min",
+        stats_max: "Max",
+        stats_mean: "Mean",
+        stats_std: "Std",
+        none: "None",
+        no_crs: "No CRS",
+        pixel: "Pixel",
+        value: "Value",
+        coord: "Coord",
+        zoom: "Zoom",
+        invalid_ramp: "The RGB table is not valid.",
+        imported_ramp: "Imported ramp",
       }
     };
 
@@ -598,6 +654,7 @@ export function getWebviewContent(
     const rampSearch = document.getElementById("rampSearch");
     const rampCategorySelect = document.getElementById("rampCategorySelect");
     const activeRampBar = document.getElementById("activeRampBar");
+    const activeRampName = document.getElementById("activeRampName");
     const chkReverse = document.getElementById("chkReverse");
     const distSelect = document.getElementById("distSelect");
     const numBinsInput = document.getElementById("numBinsInput");
@@ -613,6 +670,8 @@ export function getWebviewContent(
     const rasterCanvas = document.getElementById("rasterCanvas");
     const ctx = rasterCanvas.getContext("2d");
     const viewport = document.getElementById("viewport");
+    const statusOverlay = document.getElementById("statusOverlay");
+    const bandSelect = document.getElementById("bandSelect");
 
     // Acklam Probit Inverse Normal CDF (Matches NormalDist().inv_cdf in Python)
     function standardNormalInvCdf(p) {
@@ -651,15 +710,35 @@ export function getWebviewContent(
       const message = event.data;
       if (message.type === "init") {
         rasterInfo = message.data;
-        rasterInfo.previewData = new Float32Array(message.data.previewData.map(v => v === null ? NaN : v));
+        rasterInfo.previewData = decodeFloat32(message.data.previewDataBase64);
+        rasterInfo.sampleData = decodeFloat32(message.data.sampleDataBase64);
+        bandSelect.disabled = false;
+        statusOverlay.hidden = true;
         initBandSelect();
         updateStatsUI();
         renderRampGrid();
         updateActiveRampBar();
         updateAndRender();
         resetTransform();
+      } else if (message.type === "loading") {
+        bandSelect.disabled = true;
+        statusOverlay.textContent = I18N[currentLang].loading;
+        statusOverlay.hidden = false;
+      } else if (message.type === "error") {
+        bandSelect.disabled = false;
+        statusOverlay.textContent = message.message || "GeoTIFF error";
+        statusOverlay.hidden = false;
       }
     });
+
+    function decodeFloat32(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return new Float32Array(bytes.buffer);
+    }
 
     langSelect.addEventListener("change", (e) => {
       currentLang = e.target.value;
@@ -672,40 +751,45 @@ export function getWebviewContent(
         const key = el.getAttribute("data-i18n");
         if (dict[key]) el.textContent = dict[key];
       });
+      rampSearch.placeholder = currentLang === "en" ? "Search ramp..." : "Buscar rampa...";
       renderRampGrid();
+      updateActiveRampBar();
+      if (rasterInfo) {
+        initBandSelect();
+        updateStatsUI();
+      }
     }
 
     function initBandSelect() {
-      const bandSelect = document.getElementById("bandSelect");
       bandSelect.innerHTML = "";
       for (let i = 0; i < rasterInfo.bandCount; i++) {
         const opt = document.createElement("option");
         opt.value = i;
-        opt.textContent = \`Banda \${i + 1}\`;
+        opt.textContent = \`\${I18N[currentLang].band_word} \${i + 1}\`;
         if (i === rasterInfo.activeBand) opt.selected = true;
         bandSelect.appendChild(opt);
       }
-      bandSelect.addEventListener("change", (e) => {
-        vscode.postMessage({ type: "changeBand", band: parseInt(e.target.value) });
-      });
     }
+    bandSelect.addEventListener("change", (e) => {
+      vscode.postMessage({ type: "changeBand", band: parseInt(e.target.value) });
+    });
 
     function updateStatsUI() {
       const s = rasterInfo.stats;
       const geo = rasterInfo.geo;
-      let geoHtml = "";
+      const dict = I18N[currentLang];
+      let geoText = "";
       if (geo && geo.hasGeo && geo.bbox) {
         const [minX, minY, maxX, maxY] = geo.bbox;
-        geoHtml = \`<br/>SRC: <b>\${geo.crs}</b><br/>BBOX: E[\${minX.toFixed(2)}, \${maxX.toFixed(2)}] N[\${minY.toFixed(2)}, \${maxY.toFixed(2)}]\`;
+        geoText = \`\nCRS: \${geo.crs}\nBBOX: E[\${minX.toFixed(2)}, \${maxX.toFixed(2)}] N[\${minY.toFixed(2)}, \${maxY.toFixed(2)}]\`;
       } else {
-        geoHtml = \`<br/>SRC: <b>\${geo ? geo.crs : "Sin CRS"}</b>\`;
+        geoText = \`\nCRS: \${geo ? geo.crs : dict.no_crs}\`;
       }
 
-      document.getElementById("statsBar").innerHTML =
-        \`Mín: <b>\${s.minimum.toPrecision(6)}</b> | Máx: <b>\${s.maximum.toPrecision(6)}</b><br/>\` +
-        \`Media: <b>\${s.mean.toPrecision(6)}</b> | Desv: <b>\${s.stddev.toPrecision(6)}</b><br/>\` +
-        \`NoData: <b>\${s.noDataValue !== null ? s.noDataValue : "Ninguno"}</b>\` +
-        geoHtml;
+      document.getElementById("statsBar").textContent =
+        \`\${dict.stats_min}: \${s.minimum.toPrecision(6)} | \${dict.stats_max}: \${s.maximum.toPrecision(6)}\n\` +
+        \`\${dict.stats_mean}: \${s.mean.toPrecision(6)} | \${dict.stats_std}: \${s.stddev.toPrecision(6)}\n\` +
+        \`NoData: \${s.noDataValue !== null ? s.noDataValue : dict.none}\` + geoText;
 
       if (!chkManualLimits.checked) {
         manualMinInput.value = s.minimum.toFixed(4);
@@ -749,6 +833,16 @@ export function getWebviewContent(
 
     function updateActiveRampBar() {
       activeRampBar.style.background = makeGradientCss(selectedPalette.stops, isReversed);
+      activeRampName.textContent = currentLang === "en" ? selectedPalette.nameEn : selectedPalette.nameEs;
+    }
+
+    function getActiveStops() {
+      const colours = (isReversed ? selectedPalette.stops.slice().reverse() : selectedPalette.stops)
+        .map((stop) => stop.color);
+      return colours.map((color, index) => ({
+        color,
+        position: index / Math.max(1, colours.length - 1)
+      }));
     }
 
     function makeGradientCss(stops, reversed) {
@@ -769,6 +863,63 @@ export function getWebviewContent(
       updateAndRender();
     });
 
+    const rampFileInput = document.getElementById("rampFileInput");
+    document.getElementById("btnImportRamp").addEventListener("click", () => rampFileInput.click());
+    rampFileInput.addEventListener("change", async () => {
+      const file = rampFileInput.files && rampFileInput.files[0];
+      if (!file) return;
+      try {
+        const palette = parseRgbTable(await file.text(), file.name);
+        const previous = BUILTIN_PALETTES.findIndex((item) => item.category === "custom");
+        if (previous >= 0) BUILTIN_PALETTES.splice(previous, 1);
+        BUILTIN_PALETTES.push(palette);
+        selectedPalette = palette;
+        rampCategorySelect.value = "custom";
+        rampSearch.value = "";
+        renderRampGrid();
+        updateActiveRampBar();
+        updateAndRender();
+      } catch {
+        statusOverlay.textContent = I18N[currentLang].invalid_ramp;
+        statusOverlay.hidden = false;
+        setTimeout(() => { if (rasterInfo) statusOverlay.hidden = true; }, 2500);
+      } finally {
+        rampFileInput.value = "";
+      }
+    });
+
+    function parseRgbTable(text, name) {
+      const rows = [];
+      for (const sourceLine of text.split(/\\r?\\n/)) {
+        const line = sourceLine.trim();
+        if (!line || line.startsWith("#") || line.startsWith("//") || line.startsWith("!")) continue;
+        const values = (line.match(/[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?/g) || []).map(Number);
+        if (values.length >= 3) {
+          rows.push({ position: values.length === 3 ? null : values[0], rgb: values.slice(-3) });
+        }
+      }
+      if (rows.length < 2 || rows.some((row) => row.rgb.some((value) => !Number.isFinite(value) || value < 0 || value > 255))) {
+        throw new Error("invalid RGB");
+      }
+      const positioned = rows.every((row) => row.position !== null);
+      if (!positioned && !rows.every((row) => row.position === null)) throw new Error("mixed positions");
+      if (positioned) rows.sort((left, right) => left.position - right.position);
+      const low = positioned ? rows[0].position : 0;
+      const high = positioned ? rows[rows.length - 1].position : rows.length - 1;
+      if (!(high > low)) throw new Error("invalid positions");
+      const stops = rows.map((row, index) => ({
+        position: positioned ? (row.position - low) / (high - low) : index / (rows.length - 1),
+        color: "#" + row.rgb.map((value) => Math.round(value).toString(16).padStart(2, "0")).join("")
+      }));
+      return {
+        id: "custom",
+        nameEs: \`\${I18N.es.imported_ramp}: \${name}\`,
+        nameEn: \`\${I18N.en.imported_ramp}: \${name}\`,
+        category: "custom",
+        stops
+      };
+    }
+
     // Controls
     distSelect.addEventListener("change", (e) => {
       const val = e.target.value;
@@ -782,6 +933,11 @@ export function getWebviewContent(
     renderModeSelect.addEventListener("change", updateAndRender);
 
     chkManualLimits.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        chkPercentiles.checked = false;
+        pctLowInput.disabled = true;
+        pctHighInput.disabled = true;
+      }
       manualMinInput.disabled = !e.target.checked;
       manualMaxInput.disabled = !e.target.checked;
       updateAndRender();
@@ -790,6 +946,11 @@ export function getWebviewContent(
     manualMaxInput.addEventListener("input", updateAndRender);
 
     chkPercentiles.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        chkManualLimits.checked = false;
+        manualMinInput.disabled = true;
+        manualMaxInput.disabled = true;
+      }
       pctLowInput.disabled = !e.target.checked;
       pctHighInput.disabled = !e.target.checked;
       updateAndRender();
@@ -879,8 +1040,7 @@ export function getWebviewContent(
       const range = maximum - minimum;
       if (range <= 0) return counts;
 
-      const sampleStep = Math.max(1, Math.floor(data.length / 250000));
-      for (let i = 0; i < data.length; i += sampleStep) {
+      for (let i = 0; i < data.length; i++) {
         const val = data[i];
         if (Number.isFinite(val) && val >= minimum && val <= maximum) {
           const binIdx = Math.min(
@@ -895,9 +1055,12 @@ export function getWebviewContent(
 
     // Matches plugin.py calculate_breaks
     function calculateBreaksQgis(rasterData, stats, min, max) {
-      const bins = parseInt(numBinsInput.value) || 39;
+      const bins = Math.min(255, Math.max(2, parseInt(numBinsInput.value) || 39));
       const method = distSelect.value;
-      const sigma = parseFloat(sigmaInput.value) || 2;
+      const requestedSigma = Number(sigmaInput.value);
+      const sigma = Number.isFinite(requestedSigma)
+        ? Math.min(6, Math.max(0.5, requestedSigma))
+        : 2;
       const shiftLog = chkShiftLog.checked;
       const renderMode = renderModeSelect.value;
 
@@ -981,7 +1144,16 @@ export function getWebviewContent(
       }
     }
 
+    let renderFrame = 0;
     function updateAndRender() {
+      if (renderFrame) cancelAnimationFrame(renderFrame);
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = 0;
+        renderNow();
+      });
+    }
+
+    function renderNow() {
       if (!rasterInfo) return;
 
       const dataMin = rasterInfo.stats.minimum;
@@ -989,32 +1161,39 @@ export function getWebviewContent(
       let min = dataMin;
       let max = dataMax;
 
-      if (chkManualLimits.checked) {
-        min = parseFloat(manualMinInput.value) || min;
-        max = parseFloat(manualMaxInput.value) || max;
-      } else if (chkPercentiles.checked) {
-        const lowP = parseFloat(pctLowInput.value) || 2;
-        const highP = parseFloat(pctHighInput.value) || 98;
-        const pctRange = computePercentileRangeQgis(
-          rasterInfo.stats.percentileCounts,
-          dataMin,
-          dataMax,
-          lowP,
-          highP
-        );
-        min = pctRange.low;
-        max = pctRange.high;
-      }
-
       let breakResult;
       try {
-        breakResult = calculateBreaksQgis(rasterInfo.previewData, rasterInfo.stats, min, max);
+        if (chkManualLimits.checked) {
+          const requestedMin = Number(manualMinInput.value);
+          const requestedMax = Number(manualMaxInput.value);
+          if (Number.isFinite(requestedMin)) min = requestedMin;
+          if (Number.isFinite(requestedMax)) max = requestedMax;
+        } else if (chkPercentiles.checked) {
+          const requestedLow = Number(pctLowInput.value);
+          const requestedHigh = Number(pctHighInput.value);
+          const lowP = Number.isFinite(requestedLow) ? requestedLow : 2;
+          const highP = Number.isFinite(requestedHigh) ? requestedHigh : 98;
+          if (!(0 <= lowP && lowP < highP && highP <= 100)) return;
+          const pctRange = computePercentileRangeQgis(
+            rasterInfo.stats.percentileCounts,
+            dataMin,
+            dataMax,
+            lowP,
+            highP
+          );
+          min = pctRange.low;
+          max = pctRange.high;
+        }
+        if (!(max > min)) {
+          max = min + Math.max(1e-6, Math.abs(min) * 1e-6);
+        }
+        breakResult = calculateBreaksQgis(rasterInfo.sampleData, rasterInfo.stats, min, max);
       } catch (err) {
         console.error(err);
         return;
       }
 
-      const stops = isReversed ? selectedPalette.stops.slice().reverse() : selectedPalette.stops;
+      const stops = getActiveStops();
       const bins = breakResult.bins;
       const colours = Array.from({ length: bins }, (_, i) => interpolateColorHex(stops, i / Math.max(1, bins - 1)));
 
@@ -1107,7 +1286,7 @@ export function getWebviewContent(
     // Viewport Pan & Zoom Controls (Focal Point at Mouse Cursor)
     function updateTransform() {
       rasterCanvas.style.transform = \`translate(\${panX}px, \${panY}px) scale(\${zoom})\`;
-      document.getElementById("zoomOverlay").textContent = \`Zoom: \${Math.round(zoom * 100)}%\`;
+      document.getElementById("zoomOverlay").textContent = \`\${I18N[currentLang].zoom}: \${Math.round(zoom * 100)}%\`;
     }
 
     function resetTransform() {
@@ -1156,8 +1335,8 @@ export function getWebviewContent(
           const fullX = Math.floor((px / rasterInfo.previewWidth) * rasterInfo.width);
           const fullY = Math.floor((py / rasterInfo.previewHeight) * rasterInfo.height);
 
-          document.getElementById("posOverlay").textContent = \`Píxel: X: \${fullX} Y: \${fullY}\`;
-          document.getElementById("valOverlay").textContent = \`Valor: \${Number.isFinite(val) ? val.toPrecision(6) : "NoData"}\`;
+          document.getElementById("posOverlay").textContent = \`\${I18N[currentLang].pixel}: X: \${fullX} Y: \${fullY}\`;
+          document.getElementById("valOverlay").textContent = \`\${I18N[currentLang].value}: \${Number.isFinite(val) ? val.toPrecision(6) : "NoData"}\`;
 
           if (rasterInfo.geo && rasterInfo.geo.hasGeo && rasterInfo.geo.bbox) {
             const [minX, minY, maxX, maxY] = rasterInfo.geo.bbox;
@@ -1169,12 +1348,12 @@ export function getWebviewContent(
 
             const isGeographic = (rasterInfo.geo.epsg === 4326) || (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90);
             if (isGeographic) {
-              document.getElementById("geoOverlay").textContent = \`Coord: Lon: \${realX.toFixed(6)}° Lat: \${realY.toFixed(6)}°\`;
+              document.getElementById("geoOverlay").textContent = \`\${I18N[currentLang].coord}: Lon: \${realX.toFixed(6)}° Lat: \${realY.toFixed(6)}°\`;
             } else {
-              document.getElementById("geoOverlay").textContent = \`Coord: E: \${realX.toFixed(2)} N: \${realY.toFixed(2)}\`;
+              document.getElementById("geoOverlay").textContent = \`\${I18N[currentLang].coord}: E: \${realX.toFixed(2)} N: \${realY.toFixed(2)}\`;
             }
           } else {
-            document.getElementById("geoOverlay").textContent = "Coord: Sin CRS";
+            document.getElementById("geoOverlay").textContent = \`\${I18N[currentLang].coord}: \${I18N[currentLang].no_crs}\`;
           }
         }
       }
@@ -1218,10 +1397,11 @@ export function getWebviewContent(
 
     // Export PNG
     document.getElementById("btnExportPng").addEventListener("click", () => {
-      const link = document.createElement("a");
-      link.download = "georamp_export.png";
-      link.href = rasterCanvas.toDataURL("image/png");
-      link.click();
+      if (!rasterInfo) return;
+      vscode.postMessage({
+        type: "savePng",
+        dataUrl: rasterCanvas.toDataURL("image/png")
+      });
     });
 
     // Send ready handshake to extension host once scripts are loaded

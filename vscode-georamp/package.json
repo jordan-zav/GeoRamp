@@ -2,7 +2,7 @@
   "name": "georamp",
   "displayName": "GeoRamp",
   "description": "Interactive GeoTIFF viewer with scientific and geophysical color ramps.",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "publisher": "jordanzav",
   "license": "GPL-3.0-only",
   "engines": {
@@ -32,6 +32,18 @@
         "priority": "option"
       }
     ],
+    "configuration": {
+      "title": "GeoRamp",
+      "properties": {
+        "georamp.previewMaxDimension": {
+          "type": "number",
+          "default": 1400,
+          "minimum": 512,
+          "maximum": 4096,
+          "description": "Maximum width or height of the decoded preview. Larger values use more memory."
+        }
+      }
+    },
     "menus": {
       "explorer/context": [
         {
@@ -44,6 +56,7 @@
   },
   "scripts": {
     "build": "node esbuild.js",
+    "check:webview": "node scripts/validate-webview.js",
     "watch": "node esbuild.js --watch",
     "vscode:prepublish": "npm run build",
     "package:vsix": "vsce package --no-dependencies"

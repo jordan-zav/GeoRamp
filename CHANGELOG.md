@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2 - 2026-08-25
+
+- Muestreo determinista de 512 por 512 compartido con la extensión de VS Code.
+- Estadísticas, percentiles e histogramas reproducibles entre ambos plugins.
+
 ## 1.4.1 - 2026-08-25
 
 - Selector desplegable sustituido por una galería permanente y filtrable de rampas.
