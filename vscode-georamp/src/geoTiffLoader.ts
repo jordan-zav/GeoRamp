@@ -1,4 +1,5 @@
 import { fromFile, type TypedArray } from 'geotiff';
+import { affineTransformFromFileDirectory, type AffineTransform } from './geo';
 
 export interface BandStats {
   minimum: number;
@@ -14,6 +15,9 @@ export interface GeoSpatialInfo {
   crs: string;
   epsg: number | null;
   bbox: [number, number, number, number] | null;
+  transform: AffineTransform | null;
+  pixelIsArea: boolean;
+  isGeographic: boolean;
   hasGeo: boolean;
 }
 
@@ -175,7 +179,7 @@ function calculateStats(data: Float32Array, noDataValue: number | null): BandSta
   return { minimum, maximum, mean, stddev, validCount, noDataValue, percentileCounts };
 }
 
-function readGeoInfo(image: any): GeoSpatialInfo {
+export function readGeoInfo(image: any): GeoSpatialInfo {
   let bbox: [number, number, number, number] | null = null;
   try {
     const candidate = image.getBoundingBox();
@@ -186,20 +190,42 @@ function readGeoInfo(image: any): GeoSpatialInfo {
     bbox = null;
   }
 
+  const transform = affineTransformFromFileDirectory(image.fileDirectory);
+  let pixelIsArea = true;
+  try {
+    pixelIsArea = Boolean(image.pixelIsArea());
+  } catch {
+    pixelIsArea = true;
+  }
+
   let epsg: number | null = null;
   let crs = 'Sin CRS';
+  let isGeographic = false;
   try {
     const keys = image.getGeoKeys();
     const projected = Number(keys?.ProjectedCSTypeGeoKey);
     const geographic = Number(keys?.GeographicTypeGeoKey);
+    const modelType = Number(keys?.GTModelTypeGeoKey);
     if (Number.isInteger(projected) && projected > 0 && projected !== 32767) {
       epsg = projected;
     } else if (Number.isInteger(geographic) && geographic > 0 && geographic !== 32767) {
       epsg = geographic;
     }
+    isGeographic = modelType === 2 || (
+      !(Number.isInteger(projected) && projected > 0 && projected !== 32767)
+      && Number.isInteger(geographic) && geographic > 0
+    );
     if (epsg !== null) crs = `EPSG:${epsg}`;
   } catch {
     crs = 'Sin CRS';
   }
-  return { crs, epsg, bbox, hasGeo: bbox !== null };
+  return {
+    crs,
+    epsg,
+    bbox,
+    transform,
+    pixelIsArea,
+    isGeographic,
+    hasGeo: bbox !== null && transform !== null,
+  };
 }

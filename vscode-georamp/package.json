@@ -4,7 +4,11 @@
   "description": "Interactive GeoTIFF viewer with scientific and geophysical color ramps.",
   "version": "0.2.1",
   "publisher": "jordanzav",
-  "license": "GPL-3.0-only",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jordan-zav/GeoRamp.git"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -55,6 +59,8 @@
     }
   },
   "scripts": {
+    "test": "node scripts/run-tests.js",
+    "typecheck": "tsc --noEmit",
     "build": "node esbuild.js",
     "check:webview": "node scripts/validate-webview.js",
     "watch": "node esbuild.js --watch",

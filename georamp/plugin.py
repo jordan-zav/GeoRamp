@@ -1138,10 +1138,12 @@ class ColourDialog(QDialog):
             self.palette_combo.setCurrentIndex(index)
 
     def active_stops(self):
-        colours = [c for _, c in self.palette_stops]
         if self.reverse_check.isChecked():
-            colours.reverse()
-        return [(i / (len(colours) - 1), colour) for i, colour in enumerate(colours)]
+            return [
+                (1 - position, colour)
+                for position, colour in reversed(self.palette_stops)
+            ]
+        return list(self.palette_stops)
 
     def update_ramp_preview(self):
         if not hasattr(self, "ramp_preview"):

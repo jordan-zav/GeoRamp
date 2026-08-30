@@ -81,16 +81,6 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
         );
         if (disposed || request !== sequence) return;
         activeBand = data.activeBand;
-        const bytes = Buffer.from(
-          data.previewData.buffer,
-          data.previewData.byteOffset,
-          data.previewData.byteLength
-        );
-        const sampleBytes = Buffer.from(
-          data.sampleData.buffer,
-          data.sampleData.byteOffset,
-          data.sampleData.byteLength
-        );
         await panel.webview.postMessage({
           type: 'init',
           data: {
@@ -102,8 +92,8 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
             geo: data.geo,
             previewWidth: data.previewWidth,
             previewHeight: data.previewHeight,
-            previewDataBase64: bytes.toString('base64'),
-            sampleDataBase64: sampleBytes.toString('base64'),
+            previewDataBuffer: data.previewData.buffer,
+            sampleDataBuffer: data.sampleData.buffer,
           },
         });
       } catch (error) {

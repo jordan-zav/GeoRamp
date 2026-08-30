@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
-import { BUILTIN_PALETTES } from './palettes';
+import { rasterPixelToModel } from './geo';
+import { BUILTIN_PALETTES, normalizePaletteStops } from './palettes';
 
 export function getWebviewContent(
   webview: vscode.Webview,
@@ -8,6 +9,8 @@ export function getWebviewContent(
 ): string {
   const nonce = getNonce();
   const palettesJson = JSON.stringify(BUILTIN_PALETTES);
+  const normalizePaletteStopsSource = normalizePaletteStops.toString();
+  const rasterPixelToModelSource = rasterPixelToModel.toString();
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -342,7 +345,7 @@ export function getWebviewContent(
 <body>
   <header>
     <h1>
-      <span id="titleText">GeoRamp - Visor GeoTIFF</span>
+      <span id="titleText" data-i18n="title">GeoRamp - Visor GeoTIFF</span>
     </h1>
     <div class="header-actions">
       <select id="langSelect" style="width: 90px;">
@@ -519,6 +522,8 @@ export function getWebviewContent(
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const BUILTIN_PALETTES = ${palettesJson};
+    const normalizePaletteStops = ${normalizePaletteStopsSource};
+    const rasterPixelToModel = ${rasterPixelToModelSource};
 
     // Dictionary
     const I18N = {
@@ -710,8 +715,8 @@ export function getWebviewContent(
       const message = event.data;
       if (message.type === "init") {
         rasterInfo = message.data;
-        rasterInfo.previewData = decodeFloat32(message.data.previewDataBase64);
-        rasterInfo.sampleData = decodeFloat32(message.data.sampleDataBase64);
+        rasterInfo.previewData = new Float32Array(message.data.previewDataBuffer);
+        rasterInfo.sampleData = new Float32Array(message.data.sampleDataBuffer);
         bandSelect.disabled = false;
         statusOverlay.hidden = true;
         initBandSelect();
@@ -730,15 +735,6 @@ export function getWebviewContent(
         statusOverlay.hidden = false;
       }
     });
-
-    function decodeFloat32(base64) {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index++) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-      return new Float32Array(bytes.buffer);
-    }
 
     langSelect.addEventListener("change", (e) => {
       currentLang = e.target.value;
@@ -837,18 +833,13 @@ export function getWebviewContent(
     }
 
     function getActiveStops() {
-      const colours = (isReversed ? selectedPalette.stops.slice().reverse() : selectedPalette.stops)
-        .map((stop) => stop.color);
-      return colours.map((color, index) => ({
-        color,
-        position: index / Math.max(1, colours.length - 1)
-      }));
+      return normalizePaletteStops(selectedPalette.stops, isReversed);
     }
 
     function makeGradientCss(stops, reversed) {
-      const activeStops = reversed ? stops.slice().reverse() : stops;
-      const str = activeStops.map((s, i) => {
-        const pos = (i / (activeStops.length - 1)) * 100;
+      const activeStops = normalizePaletteStops(stops, reversed);
+      const str = activeStops.map((s) => {
+        const pos = s.position * 100;
         return \`\${s.color} \${pos.toFixed(1)}%\`;
       }).join(", ");
       return \`linear-gradient(to right, \${str})\`;
@@ -906,7 +897,9 @@ export function getWebviewContent(
       if (positioned) rows.sort((left, right) => left.position - right.position);
       const low = positioned ? rows[0].position : 0;
       const high = positioned ? rows[rows.length - 1].position : rows.length - 1;
-      if (!(high > low)) throw new Error("invalid positions");
+      if (!(high > low) || (positioned && rows.some((row, index) => index > 0 && row.position === rows[index - 1].position))) {
+        throw new Error("invalid positions");
+      }
       const stops = rows.map((row, index) => ({
         position: positioned ? (row.position - low) / (high - low) : index / (rows.length - 1),
         color: "#" + row.rgb.map((value) => Math.round(value).toString(16).padStart(2, "0")).join("")
@@ -1292,6 +1285,7 @@ export function getWebviewContent(
     function resetTransform() {
       if (!rasterInfo) return;
       const vRect = viewport.getBoundingClientRect();
+      if (vRect.width <= 0 || vRect.height <= 0) return;
       const fitZoom = Math.min(
         (vRect.width * 0.9) / rasterInfo.previewWidth,
         (vRect.height * 0.9) / rasterInfo.previewHeight
@@ -1332,22 +1326,23 @@ export function getWebviewContent(
           const idx = py * rasterInfo.previewWidth + px;
           const val = rasterInfo.previewData[idx];
 
-          const fullX = Math.floor((px / rasterInfo.previewWidth) * rasterInfo.width);
-          const fullY = Math.floor((py / rasterInfo.previewHeight) * rasterInfo.height);
+          const sourcePixelX = ((px + 0.5) * rasterInfo.width / rasterInfo.previewWidth) - 0.5;
+          const sourcePixelY = ((py + 0.5) * rasterInfo.height / rasterInfo.previewHeight) - 0.5;
+          const fullX = Math.max(0, Math.min(rasterInfo.width - 1, Math.round(sourcePixelX)));
+          const fullY = Math.max(0, Math.min(rasterInfo.height - 1, Math.round(sourcePixelY)));
 
           document.getElementById("posOverlay").textContent = \`\${I18N[currentLang].pixel}: X: \${fullX} Y: \${fullY}\`;
           document.getElementById("valOverlay").textContent = \`\${I18N[currentLang].value}: \${Number.isFinite(val) ? val.toPrecision(6) : "NoData"}\`;
 
-          if (rasterInfo.geo && rasterInfo.geo.hasGeo && rasterInfo.geo.bbox) {
-            const [minX, minY, maxX, maxY] = rasterInfo.geo.bbox;
-            const fracX = px / (rasterInfo.previewWidth - 1 || 1);
-            const fracY = py / (rasterInfo.previewHeight - 1 || 1);
+          if (rasterInfo.geo && rasterInfo.geo.hasGeo && rasterInfo.geo.transform) {
+            const [realX, realY] = rasterPixelToModel(
+              rasterInfo.geo.transform,
+              sourcePixelX,
+              sourcePixelY,
+              rasterInfo.geo.pixelIsArea
+            );
 
-            const realX = minX + fracX * (maxX - minX);
-            const realY = maxY - fracY * (maxY - minY);
-
-            const isGeographic = (rasterInfo.geo.epsg === 4326) || (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90);
-            if (isGeographic) {
+            if (rasterInfo.geo.isGeographic) {
               document.getElementById("geoOverlay").textContent = \`\${I18N[currentLang].coord}: Lon: \${realX.toFixed(6)}° Lat: \${realY.toFixed(6)}°\`;
             } else {
               document.getElementById("geoOverlay").textContent = \`\${I18N[currentLang].coord}: E: \${realX.toFixed(2)} N: \${realY.toFixed(2)}\`;

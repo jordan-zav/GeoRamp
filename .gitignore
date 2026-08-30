@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+test-data/
+.vscode-test-profile*/
+.vscode-test-extensions/
 
 dist/_package_*/
 dist/_last_stage.txt

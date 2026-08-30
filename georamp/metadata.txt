@@ -12,6 +12,7 @@ repository=https://github.com/jordan-zav/GeoRamp
 tracker=https://github.com/jordan-zav/GeoRamp/issues
 homepage=https://github.com/jordan-zav/GeoRamp
 tags=raster, color ramp, geophysics, histogram, palette
+license=GPL-3.0-or-later
 experimental=False
 deprecated=False
 hasProcessingProvider=False

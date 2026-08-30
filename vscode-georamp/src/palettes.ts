@@ -11,6 +11,19 @@ export interface PaletteInfo {
   stops: ColorStop[];
 }
 
+export function normalizePaletteStops(stops: ColorStop[], reversed = false): ColorStop[] {
+  if (!reversed) {
+    return stops.map((stop) => ({ ...stop }));
+  }
+  return stops
+    .slice()
+    .reverse()
+    .map((stop) => ({
+      position: 1 - stop.position,
+      color: stop.color,
+    }));
+}
+
 function makePalette(hexColors: string[]): ColorStop[] {
   const len = hexColors.length;
   return hexColors.map((c, i) => ({
@@ -219,10 +232,7 @@ export const BUILTIN_PALETTES: PaletteInfo[] = [
 ];
 
 export function reverseStops(stops: ColorStop[]): ColorStop[] {
-  return stops.map((s, i) => ({
-    position: s.position,
-    color: stops[stops.length - 1 - i].color,
-  }));
+  return normalizePaletteStops(stops, true);
 }
 
 export function parseHex(colorStr: string): [number, number, number] {
@@ -275,11 +285,25 @@ export function parseRgbTable(content: string, name: string): PaletteInfo {
   }
 
   const hasPositions = rows.every((r) => r.pos !== undefined);
+  if (!hasPositions && !rows.every((r) => r.pos === undefined)) {
+    throw new Error("Todas las filas deben usar el mismo formato.");
+  }
+  if (rows.some((r) => ![r.r, r.g, r.b].every((value) => Number.isFinite(value) && value >= 0 && value <= 255))) {
+    throw new Error("RGB debe estar entre 0 y 255.");
+  }
+  if (hasPositions) {
+    rows.sort((left, right) => left.pos! - right.pos!);
+    if (!(rows[rows.length - 1].pos! > rows[0].pos!) || rows.some((row, index) => index > 0 && row.pos === rows[index - 1].pos)) {
+      throw new Error("Las posiciones no son válidas.");
+    }
+  }
+  const low = hasPositions ? rows[0].pos! : 0;
+  const high = hasPositions ? rows[rows.length - 1].pos! : rows.length - 1;
   const stops: ColorStop[] = rows.map((r, i) => {
-    const pos = hasPositions ? (r.pos! <= 1 ? r.pos! : r.pos! / 255) : i / (rows.length - 1);
-    const toHex = (n: number) => Math.min(255, Math.max(0, Math.round(n))).toString(16).padStart(2, "0");
+    const pos = hasPositions ? (r.pos! - low) / (high - low) : i / (rows.length - 1);
+    const toHex = (n: number) => Math.round(n).toString(16).padStart(2, "0");
     return {
-      position: Math.max(0, Math.min(1, pos)),
+      position: pos,
       color: `#${toHex(r.r)}${toHex(r.g)}${toHex(r.b)}`,
     };
   });
