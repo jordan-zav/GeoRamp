@@ -497,6 +497,7 @@ class HistogramView(QWidget):
         super().__init__()
         self.plot_data = None
         self.sigma_range = None
+        self.stat_markers = []
         self.hover = None
         self.readout = None
         self.setMouseTracking(True)
@@ -508,12 +509,15 @@ class HistogramView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.TextAntialiasing)
         draw_histogram(painter, *self.plot_data, width=self.width(),
-                       height=self.height(), sigma_range=self.sigma_range)
+                       height=self.height(), sigma_range=self.sigma_range,
+                       stat_markers=self.stat_markers)
         if self.hover:
             x, y = self.hover
             painter.setPen(QColor("#475569"))
             painter.drawLine(x, 52, x, self.height() - 58)
             painter.drawLine(78, y, self.width() - 35, y)
+            painter.setBrush(QColor("#475569"))
+            painter.drawEllipse(x - 3, y - 3, 6, 6)
         painter.end()
 
     def mouseMoveEvent(self, event):
@@ -525,10 +529,10 @@ class HistogramView(QWidget):
         if not (78 <= x <= self.width() - 35 and 52 <= y <= self.height() - 58):
             self.leaveEvent(event)
             return
-        self.hover = (x, y)
         value = minimum + (x - 78) / width * (maximum - minimum)
-        frequency = (self.height() - 58 - y) / height * max(counts)
         index = min(len(counts) - 1, int((x - 78) / width * len(counts)))
+        frequency = counts[index]
+        self.hover = (x, self.height() - 58 - round(frequency / max(1, max(counts)) * height))
         step = (maximum - minimum) / len(counts)
         label = "Intervalo / muestras" if language == "es" else "Bin / samples"
         if self.readout:
@@ -803,6 +807,8 @@ class ColourDialog(QDialog):
         self.stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.histogram_label = HistogramView()
         self.sigma_overlay = QCheckBox("Media ± nσ" if self.language == "es" else "Mean ± nσ")
+        self.stat_overlay = QCheckBox()
+        self.stat_overlay.toggled.connect(self.update_histogram_sigma)
         self.histogram_sigma = QDoubleSpinBox()
         self.histogram_sigma.setRange(0.1, 10.0)
         self.histogram_sigma.setSingleStep(0.1)
@@ -820,6 +826,7 @@ class ColourDialog(QDialog):
         sigma_row = QHBoxLayout()
         sigma_row.addWidget(self.sigma_overlay)
         sigma_row.addWidget(self.histogram_sigma)
+        sigma_row.addWidget(self.stat_overlay)
         sigma_row.addWidget(self.sigma_summary, 1)
         preview_layout.addLayout(sigma_row)
         preview_layout.addWidget(self.histogram_cursor)
@@ -1580,7 +1587,20 @@ class ColourDialog(QDialog):
 
     def update_histogram_sigma(self, *unused):
         self.histogram_label.sigma_range = None
+        self.histogram_label.stat_markers = []
         es = self.language == "es"
+        self.stat_overlay.setText("Media / mediana / moda" if es else "Mean / median / mode")
+        if self.stat_overlay.isChecked() and hasattr(self, "_histogram_calculated"):
+            result = self._histogram_calculated[0]
+            counts = result['counts']
+            markers = [(result['mean'], "Media" if es else "Mean", "#2563eb")]
+            if 'median' in result:
+                markers.append((result['median'], "Mediana" if es else "Median", "#9333ea"))
+            for i, count in enumerate(counts):
+                if count == max(counts):
+                    mode = result['minimum'] + (i + 0.5) * (result['maximum'] - result['minimum']) / len(counts)
+                    markers.append((mode, "Moda ≈" if es else "Mode ≈", "#c2410c"))
+            self.histogram_label.stat_markers = markers
         self.sigma_overlay.setText("Media ± nσ" if es else "Mean ± nσ")
         self.sigma_summary.clear()
         if self.sigma_overlay.isChecked() and hasattr(self, "_histogram_calculated"):
@@ -1774,7 +1794,7 @@ def interpolate_colour(stops, position):
 
 
 def draw_histogram(painter, counts, values, minimum, maximum, language="es",
-                   width=640, height=300, sigma_range=None):
+                   width=640, height=300, sigma_range=None, stat_markers=()):
     painter.fillRect(0, 0, width, height, QColor("white"))
     left, top, right, bottom = 78, 52, width - 35, height - 58
     plot_width, plot_height = max(1, right - left), max(1, bottom - top)
@@ -1817,6 +1837,18 @@ def draw_histogram(painter, counts, values, minimum, maximum, language="es",
         if minimum <= value <= maximum:
             x = left + round((value - minimum) / (maximum - minimum) * plot_width)
             painter.drawLine(x, top, x, bottom)
+    labels_drawn = set()
+    for marker, label, colour in stat_markers:
+        painter.setPen(QColor(colour))
+        if minimum <= marker <= maximum:
+            mx = left + round((marker - minimum) / (maximum - minimum) * plot_width)
+            painter.drawLine(mx, top, mx, bottom)
+        if label not in labels_drawn:
+            text = f"{label}: {marker:.6g}"
+            if not minimum <= marker <= maximum:
+                text += " *"
+            painter.drawText(left + 8, top + 18 + len(labels_drawn) * 18, text)
+            labels_drawn.add(label)
     painter.setPen(QColor("#334155"))
     painter.drawLine(left, top, left, bottom)
     painter.drawLine(left, bottom, right, bottom)
