@@ -1,19 +1,19 @@
 [general]
 name=GeoRamp
-description=Aplica paletas geofísicas RGB y distribuciones por histograma a rásteres.
+description=Scientific colour ramps, interactive histograms and multi-layer raster styling for QGIS.
 version=1.0.0
 qgisMinimumVersion=3.34
 author=Jordan Zavaleta
 email=jordanzav@gisgeo.dev
-about=Colorización ráster bilingüe con 27 rampas visuales, visor en vivo, aplicación múltiple, percentiles, procesamiento cancelable, NoData, tablas RGB y estilos QML.
+about=Style rasters with 27 scientific and geophysical colour ramps, live previews, group-based multi-layer selection and interactive histograms. Inspect sample statistics and observed sigma coverage, apply percentile stretches with saturated endpoints, import RGB tables and exchange QML styles. Includes English and Spanish interfaces and NoData-aware sampling.
 category=Raster
 icon=icon.svg
 repository=https://github.com/jordan-zav/GeoRamp
 tracker=https://github.com/jordan-zav/GeoRamp/issues
 homepage=https://github.com/jordan-zav/GeoRamp
-tags=raster, color ramp, geophysics, histogram, palette
+tags=raster, color ramp, geophysics, histogram, palette, visualization
 license=GPL-3.0-or-later
 experimental=False
 deprecated=False
 hasProcessingProvider=False
-changelog=1.0.0 - Primera versión para publicación: rampas bilingües, visor en tiempo real, selección multicapa por grupos, histograma interactivo con estadísticas y cobertura sigma, percentiles con saturación de extremos, importación RGB y estilos QML.
+changelog=1.0.0 - Initial submission: scientific colour ramps, live raster preview, group-based multi-layer selection, interactive histogram statistics and sigma coverage, percentile stretches with saturated endpoints, RGB table import and QML styles.

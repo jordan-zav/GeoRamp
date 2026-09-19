@@ -3,11 +3,7 @@
 
 # GeoRamp
 
-**Visor rápido de rasters geoespaciales**
-
-Abre, superpone y explora tus rasters en VS Code.
-
-Scientific and geophysical raster colour ramps across QGIS and VS Code.
+**Scientific colour ramps and interactive raster exploration for QGIS**
 
 Inspect raster distributions, choose an explicit stretch and apply repeatable
 continuous or classified colour tables without losing NoData semantics.
@@ -19,6 +15,8 @@ continuous or classified colour tables without losing NoData semantics.
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-0f766e)](LICENSE)
 
 </div>
+
+[Install in QGIS](#install-the-qgis-plugin) · [Features](#capabilities) · [VS Code extension](#georamp--geotiff--raster-viewer) · [Report an issue](https://github.com/jordan-zav/GeoRamp/issues)
 
 > [!IMPORTANT]
 > A colour ramp changes visualization, not raster values. Distribution choice,
@@ -62,8 +60,8 @@ Raster layer / GeoTIFF
 | Import | Text `CSV`, `TXT`, `TBL`, `ZON`, `CLR` and `LUT` colour tables |
 | Classification | 2–255 intervals, continuous or discrete representation |
 | Limits | Automatic/manual bounds, ramp inversion, sigma and percentile clipping |
-| Inspection | Histogram, statistics, class table and live raster preview |
-| Scale | One-layer or multi-layer application with cancelable processing |
+| Inspection | Responsive histogram, cursor coordinates, mean, median, approximate mode and observed coverage within mean ± n standard deviations |
+| Scale | Multi-layer selection by drag, Ctrl/Shift or QGIS layer groups; live preview of the first selected layer |
 | Persistence | Language, last configuration, imported table and QML style exchange |
 | Localization | Spanish and English interface |
 
@@ -99,12 +97,15 @@ visual approximations and are not proprietary commercial colour tables.
 
 ## Install the QGIS plugin
 
-1. build or download the GeoRamp plugin ZIP;
+1. build `dist/georamp-1.0.0.zip` using `python scripts/package_plugin.py`, or download it from [GitHub Releases](https://github.com/jordan-zav/GeoRamp/releases) when available;
 2. open **Plugins → Manage and Install Plugins** in QGIS;
 3. choose **Install from ZIP**; and
 4. enable GeoRamp, then open **Raster → GeoRamp**.
 
 The minimum supported version declared by the plugin is QGIS 3.34.
+
+QGIS Plugins submission is pending. ZIP files are generated locally and are not
+included in the source checkout.
 
 ## QGIS usage
 
