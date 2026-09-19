@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { loadGeoTiffBand } from './geoTiffLoader';
+import { loadGeoTiffBand, readGeoTiffWindow } from './geoTiffLoader';
 import { getWebviewContent } from './webviewContent';
 
 class GeoTiffDocument implements vscode.CustomDocument {
@@ -44,19 +44,33 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
       path.basename(document.uri.fsPath) || 'Raster'
     );
 
+    const sources = new Map<string, vscode.Uri>([[document.uri.toString(), document.uri]]);
+    let sourceId = document.uri.toString();
+    let sourceUri = document.uri;
+    const sendSources = () => panel.webview.postMessage({ type: 'sources', activeId: sourceId,
+      sources: [...sources].map(([id, uri]) => ({ id, name: path.basename(uri.fsPath), path: uri.fsPath })) });
     let activeBand = 0;
     let sequence = 0;
     let disposed = false;
     let controller: AbortController | undefined;
-    const cancelCurrent = () => controller?.abort();
+    const layerControllers = new Map<string, AbortController>();
+    const auxiliary = new Map<string, AbortController>();
+    const cache = new Map<string, Awaited<ReturnType<typeof readGeoTiffWindow>>>();
+    const cancelCurrent = () => {
+      controller?.abort();
+      auxiliary.forEach(value => value.abort());
+      auxiliary.clear();
+      cache.clear();
+    };
     panel.onDidDispose(() => {
       disposed = true;
+      layerControllers.forEach(c => c.abort());
       cancelCurrent();
     });
     token.onCancellationRequested(cancelCurrent);
 
     const loadAndSend = async (band: number): Promise<void> => {
-      if (document.uri.scheme !== 'file') {
+      if (sourceUri.scheme !== 'file') {
         await panel.webview.postMessage({
           type: 'error',
           message: 'GeoRamp actualmente requiere un archivo GeoTIFF local.',
@@ -65,16 +79,18 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
       }
 
       cancelCurrent();
+      const loadingId = sourceId;
+      const loadingUri = sourceUri;
       controller = new AbortController();
       const request = ++sequence;
-      await panel.webview.postMessage({ type: 'loading', band });
+      await panel.webview.postMessage({ type: 'loading', band, sourceId: loadingId });
       try {
         const configured = vscode.workspace
           .getConfiguration('georamp')
           .get<number>('previewMaxDimension', 1400);
         const maxDimension = Math.min(4096, Math.max(512, configured));
         const data = await loadGeoTiffBand(
-          document.uri.fsPath,
+          loadingUri.fsPath,
           band,
           maxDimension,
           controller.signal
@@ -84,6 +100,7 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
         await panel.webview.postMessage({
           type: 'init',
           data: {
+            sourceId: loadingId, fileName: path.basename(loadingUri.fsPath),
             width: data.width,
             height: data.height,
             bandCount: data.bandCount,
@@ -105,11 +122,80 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
 
     panel.webview.onDidReceiveMessage(async (message: any) => {
       if (message?.type === 'ready') {
+        await sendSources();
         await loadAndSend(activeBand);
-      } else if (message?.type === 'changeBand' && Number.isInteger(message.band)) {
+      } else if (message?.type === 'layerPreview' && sources.has(message.id)) {
+        const id = message.id as string;
+        layerControllers.get(id)?.abort();
+        const abort = new AbortController(); layerControllers.set(id, abort);
+        try {
+          const data = await loadGeoTiffBand(sources.get(id)!.fsPath, 0, 512, abort.signal);
+          if (disposed || abort.signal.aborted || !sources.has(id)) return;
+          await panel.webview.postMessage({type:'layerPreview', id,
+            data:{...data, sourceId:id, previewData:undefined, sampleData:undefined,
+              previewDataBuffer:data.previewData.buffer}});
+        } catch (error) {
+          if (!disposed && !abort.signal.aborted) await panel.webview.postMessage({type:'layerError',id,
+            message:error instanceof Error ? error.message : String(error)});
+        } finally { if (layerControllers.get(id) === abort) layerControllers.delete(id); }
+      } else if (message?.type === 'importSources') {
+        const picked = await vscode.window.showOpenDialog({ canSelectMany: true,
+          filters: { GeoTIFF: ['tif', 'tiff'] }, openLabel: 'Importar rasters' });
+        if (disposed || !picked?.length) return;
+        for (const uri of picked) if (uri.scheme === 'file') sources.set(uri.toString(), uri);
+        if (!sources.has(sourceId)) {
+          const first = sources.entries().next().value;
+          if (first) { [sourceId, sourceUri] = first; activeBand = 0; }
+          await sendSources();
+          if (first) await loadAndSend(0);
+        } else { await sendSources(); }
+      } else if (message?.type === 'selectSource' && sources.has(message.id)) {
+        sourceId = message.id; sourceUri = sources.get(sourceId)!; activeBand = 0;
+        await sendSources();
+        await loadAndSend(0);
+      } else if (message?.type === 'removeSource' && sources.has(message.id)) {
+        layerControllers.get(message.id)?.abort();
+        sources.delete(message.id);
+        if (message.id === sourceId) {
+          cancelCurrent(); sequence++;
+          const next = sources.entries().next().value;
+          if (next) {
+            [sourceId, sourceUri] = next; activeBand = 0;
+            await sendSources(); await loadAndSend(0);
+          } else {
+            sourceId = '';
+            await sendSources(); await panel.webview.postMessage({ type: 'empty' });
+          }
+        } else { await sendSources(); }
+      } else if (message?.type === 'changeBand' && sources.has(sourceId) && message.sourceId === sourceId && Number.isInteger(message.band)) {
         await loadAndSend(message.band);
-      } else if (message?.type === 'savePng' && typeof message.dataUrl === 'string') {
-        await savePng(message.dataUrl, document.uri);
+      } else if ((message?.type === 'detail' || message?.type === 'probe')
+        && sources.has(sourceId) && message.sourceId === sourceId && sourceUri.scheme === 'file' && message.band === activeBand
+        && Array.isArray(message.window) && Number.isInteger(message.id)) {
+        const kind = message.type as string;
+        auxiliary.get(kind)?.abort();
+        const requestController = new AbortController();
+        auxiliary.set(kind, requestController);
+        const generation = sequence;
+        try {
+          const key = JSON.stringify([activeBand, message.window, message.width, message.height]);
+          const result = cache.get(key) ?? await readGeoTiffWindow(sourceUri.fsPath,
+            activeBand, message.window, message.width, message.height, requestController.signal);
+          if (disposed || requestController.signal.aborted || generation !== sequence) return;
+          if (kind === 'detail') {
+            cache.set(key, result);
+            while (cache.size > 2) cache.delete(cache.keys().next().value!);
+          }
+          await panel.webview.postMessage({ type: kind, id: message.id, band: activeBand,
+            ...result, data: undefined, buffer: result.data.buffer });
+        } catch (error) {
+          if (!disposed && !requestController.signal.aborted && generation === sequence) {
+            await panel.webview.postMessage({ type: 'detailError', kind, id: message.id,
+              message: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      } else if (message?.type === 'savePng' && sources.has(sourceId) && message.sourceId === sourceId && typeof message.dataUrl === 'string') {
+        await savePng(message.dataUrl, sourceUri);
       }
     });
   }

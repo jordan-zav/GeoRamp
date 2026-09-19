@@ -1,3 +1,11 @@
+## 0.3.0
+
+- Add a project CRS with offline EPSG search and nonlinear on-the-fly raster reprojection.
+- Preserve project CRS and view when selecting layers; allow source CRS overrides.
+- Add nested layer groups, ordering, visibility, opacity and composite PNG export.
+- Add source-pixel inspection, Float64 preservation and on-demand source detail.
+- Document 2D datum/grid limitations and add projection, layer and UI regression tests.
+
 # Changelog
 
 ## 0.2.1 - 2026-08-25

@@ -48,3 +48,26 @@ export function rasterPixelToModel(
     f + d * rasterX + e * rasterY,
   ];
 }
+
+/** Canvas affine mapping from source preview edges to reference preview edges. */
+export function previewToReference(source: any, reference: any): number[] | null {
+  if (source.sourceId === reference.sourceId) return [1,0,0,1,0,0];
+  if (!source.geo?.transform || !reference.geo?.transform || !source.geo.epsg
+    || source.geo.epsg !== reference.geo.epsg) return null;
+  const [a,b,c,d,e,f] = reference.geo.transform;
+  const determinant = a*e-b*d;
+  if (!Number.isFinite(determinant) || determinant === 0) return null;
+  const [sa,sb,sc,sd,se,sf] = source.geo.transform;
+  const sourceOffset = source.geo.pixelIsArea === false ? -0.5 : 0;
+  const referenceOffset = reference.geo.pixelIsArea === false ? 0.5 : 0;
+  const point = (x:number,y:number): number[] => {
+    const px=x*source.width/source.previewWidth+sourceOffset;
+    const py=y*source.height/source.previewHeight+sourceOffset;
+    const mx=sa*px+sb*py+sc-c, my=sd*px+se*py+sf-f;
+    return [((e*mx-b*my)/determinant+referenceOffset)*reference.previewWidth/reference.width,
+      ((a*my-d*mx)/determinant+referenceOffset)*reference.previewHeight/reference.height];
+  };
+  const origin=point(0,0), x=point(1,0), y=point(0,1);
+  const result=[x[0]-origin[0],x[1]-origin[1],y[0]-origin[0],y[1]-origin[1],origin[0],origin[1]];
+  return result.every(Number.isFinite) ? result : null;
+}

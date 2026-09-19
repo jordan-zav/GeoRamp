@@ -3,14 +3,18 @@
 
 # GeoRamp
 
-**Scientific and geophysical raster colour ramps across QGIS and VS Code**
+**Visor rápido de rasters geoespaciales**
+
+Abre, superpone y explora tus rasters en VS Code.
+
+Scientific and geophysical raster colour ramps across QGIS and VS Code.
 
 Inspect raster distributions, choose an explicit stretch and apply repeatable
 continuous or classified colour tables without losing NoData semantics.
 
 [![Status: internal testing](https://img.shields.io/badge/status-internal%20testing-f59e0b)](#project-status)
 [![QGIS plugin 1.4.2](https://img.shields.io/badge/QGIS%20plugin-1.4.2-589632?logo=qgis&logoColor=white)](georamp/metadata.txt)
-[![VS Code extension 0.2.1](https://img.shields.io/badge/VS%20Code-0.2.1-007acc?logo=visualstudiocode&logoColor=white)](vscode-georamp/package.json)
+[![VS Code extension 0.3.0](https://img.shields.io/badge/VS%20Code-0.3.0-007acc?logo=visualstudiocode&logoColor=white)](vscode-georamp/package.json)
 [![Tests](https://img.shields.io/github/actions/workflow/status/jordan-zav/GeoRamp/tests.yml?branch=main&label=tests)](https://github.com/jordan-zav/GeoRamp/actions/workflows/tests.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-0f766e)](LICENSE)
 
@@ -114,7 +118,7 @@ The minimum supported version declared by the plugin is QGIS 3.34.
 See the [plugin-specific guide](georamp/README.md) for the complete interface
 behavior and text-table examples.
 
-## VS Code extension
+## GeoRamp — GeoTIFF & Raster Viewer
 
 From `vscode-georamp`:
 
@@ -166,7 +170,7 @@ signed and NoData-rich rasters.
 ## Project status
 
 GeoRamp is in internal testing. The QGIS plugin reports version 1.4.2 and the VS
-Code extension 0.2.1. The extension worktree currently contains active local
+Code extension 0.3.0. The extension worktree currently contains active local
 development, so packaging and cross-editor parity must be revalidated before a
 public release.
 

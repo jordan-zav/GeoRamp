@@ -30,11 +30,10 @@ export interface GeoTiffData {
   geo: GeoSpatialInfo;
   previewWidth: number;
   previewHeight: number;
-  previewData: Float32Array;
-  sampleData: Float32Array;
+  previewData: Float64Array;
+  sampleData: Float64Array;
 }
 
-const SAMPLE_GRID_SIZE = 512;
 const PERCENTILE_BINS = 1024;
 
 export async function loadGeoTiffBand(
@@ -43,6 +42,7 @@ export async function loadGeoTiffBand(
   maxPreviewDimension = 1400,
   signal?: AbortSignal
 ): Promise<GeoTiffData> {
+  signal?.throwIfAborted();
   const tiff = await fromFile(filePath, signal);
   try {
     const image = await tiff.getImage(0);
@@ -61,19 +61,14 @@ export async function loadGeoTiffBand(
     const noDataValue = rawNoData !== null && rawNoData !== undefined && Number.isFinite(Number(rawNoData))
       ? Number(rawNoData)
       : null;
-    const sampleResult = await readDeterministicSample(
-      image, activeBand, width, height, signal
-    );
-    const sampleData = normalizeRaster(sampleResult, noDataValue);
-    const rasterResult = await image.readRasters({
-      samples: [activeBand],
-      interleave: true,
-      width: previewWidth,
-      height: previewHeight,
-      resampleMethod: 'nearest',
-      signal,
+    // File-level reads select internal overviews when available.
+    const rasterResult = await readOverview(tiff, image, {
+      samples: [activeBand], interleave: true,
+      width: previewWidth, height: previewHeight,
+      resampleMethod: 'nearest', signal,
     });
     const previewData = normalizeRaster(rasterResult as unknown as TypedArray, noDataValue);
+    const sampleData = previewData;
 
     return {
       width,
@@ -92,49 +87,8 @@ export async function loadGeoTiffBand(
   }
 }
 
-async function readDeterministicSample(
-  image: any,
-  band: number,
-  width: number,
-  height: number,
-  signal?: AbortSignal
-): Promise<Float32Array> {
-  const result = new Float32Array(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE);
-  const columns = Array.from(
-    { length: SAMPLE_GRID_SIZE },
-    (_, column) => Math.min(
-      width - 1,
-      Math.floor(((column + 0.5) * width) / SAMPLE_GRID_SIZE)
-    )
-  );
-  let previousSourceRow = -1;
-  let sourceValues: TypedArray | null = null;
-  for (let row = 0; row < SAMPLE_GRID_SIZE; row++) {
-    if (signal?.aborted) {
-      throw signal.reason instanceof Error ? signal.reason : new Error('Operación cancelada.');
-    }
-    const sourceRow = Math.min(
-      height - 1,
-      Math.floor(((row + 0.5) * height) / SAMPLE_GRID_SIZE)
-    );
-    if (sourceRow !== previousSourceRow) {
-      sourceValues = await image.readRasters({
-        samples: [band],
-        interleave: true,
-        window: [0, sourceRow, width, sourceRow + 1],
-        signal,
-      }) as unknown as TypedArray;
-      previousSourceRow = sourceRow;
-    }
-    for (let column = 0; column < SAMPLE_GRID_SIZE; column++) {
-      result[row * SAMPLE_GRID_SIZE + column] = Number(sourceValues![columns[column]]);
-    }
-  }
-  return result;
-}
-
-function normalizeRaster(source: TypedArray, noDataValue: number | null): Float32Array {
-  const result = new Float32Array(source.length);
+function normalizeRaster(source: TypedArray, noDataValue: number | null): Float64Array {
+  const result = new Float64Array(source.length);
   for (let index = 0; index < source.length; index++) {
     const value = Number(source[index]);
     result[index] = !Number.isFinite(value) || (noDataValue !== null && value === noDataValue)
@@ -144,7 +98,7 @@ function normalizeRaster(source: TypedArray, noDataValue: number | null): Float3
   return result;
 }
 
-function calculateStats(data: Float32Array, noDataValue: number | null): BandStats {
+function calculateStats(data: Float64Array, noDataValue: number | null): BandStats {
   let minimum = Number.POSITIVE_INFINITY;
   let maximum = Number.NEGATIVE_INFINITY;
   let mean = 0;
@@ -208,10 +162,10 @@ export function readGeoInfo(image: any): GeoSpatialInfo {
     const modelType = Number(keys?.GTModelTypeGeoKey);
     if (Number.isInteger(projected) && projected > 0 && projected !== 32767) {
       epsg = projected;
-    } else if (Number.isInteger(geographic) && geographic > 0 && geographic !== 32767) {
+    } else if (modelType !== 1 && Number.isInteger(geographic) && geographic > 0 && geographic !== 32767) {
       epsg = geographic;
     }
-    isGeographic = modelType === 2 || (
+    isGeographic = modelType === 2 || (modelType !== 1 &&
       !(Number.isInteger(projected) && projected > 0 && projected !== 32767)
       && Number.isInteger(geographic) && geographic > 0
     );
@@ -228,4 +182,53 @@ export function readGeoInfo(image: any): GeoSpatialInfo {
     isGeographic,
     hasGeo: bbox !== null && transform !== null,
   };
+}
+
+/** Bounded source-window read. Pixel probes always use the original IFD. */
+export async function readGeoTiffWindow(
+  filePath: string, band: number, window: number[], outputWidth: number,
+  outputHeight: number, signal?: AbortSignal,
+): Promise<{ data: Float64Array; width: number; height: number; window: number[] }> {
+  signal?.throwIfAborted();
+  const tiff = await fromFile(filePath, signal);
+  try {
+    const image = await tiff.getImage(0);
+    if (!Number.isInteger(band) || band < 0 || band >= image.getSamplesPerPixel()
+      || window.length !== 4 || !window.every(Number.isInteger)
+      || window[0] < 0 || window[1] < 0 || window[2] > image.getWidth()
+      || window[3] > image.getHeight() || window[2] <= window[0] || window[3] <= window[1]) {
+      throw new Error('Invalid raster window');
+    }
+    const width = Math.min(2048, window[2] - window[0], Math.max(1, Math.ceil(outputWidth)));
+    const height = Math.min(2048, window[3] - window[1], Math.max(1, Math.ceil(outputHeight)));
+    if (!Number.isFinite(width) || !Number.isFinite(height)) throw new Error('Invalid output size');
+    const options = { samples: [band], interleave: true as const, window, width, height,
+      resampleMethod: 'nearest', signal };
+    // Source windows retain exact pixel alignment, including rotated rasters.
+    const raw = await image.readRasters(options);
+    signal?.throwIfAborted();
+    return { data: normalizeRaster(raw as unknown as TypedArray, image.getGDALNoData()),
+      width, height, window };
+  } finally { await tiff.close(); }
+}
+
+// Choose an overview in pixel space: also works for plain and rotated TIFFs.
+async function readOverview(tiff: any, original: any, options: any): Promise<TypedArray> {
+  const window = options.window ?? [0, 0, original.getWidth(), original.getHeight()];
+  let selected = original;
+  const count = await tiff.getImageCount();
+  for (let index = 1; index < count; index++) {
+    const candidate = await tiff.getImage(index);
+    const directory = candidate.fileDirectory;
+    if (!(directory.NewSubfileType & 1) && directory.SubfileType !== 2) continue;
+    const sx = candidate.getWidth() / original.getWidth();
+    const sy = candidate.getHeight() / original.getHeight();
+    if (candidate.getSamplesPerPixel() !== original.getSamplesPerPixel()
+      || Math.abs(sx - sy) > 1 / Math.min(original.getWidth(), original.getHeight())) continue;
+    if ((window[2]-window[0])*sx >= options.width && (window[3]-window[1])*sy >= options.height
+      && candidate.getWidth() < selected.getWidth()) selected = candidate;
+  }
+  const sx = selected.getWidth()/original.getWidth(), sy = selected.getHeight()/original.getHeight();
+  return selected.readRasters({...options, window:[Math.floor(window[0]*sx), Math.floor(window[1]*sy),
+    Math.ceil(window[2]*sx), Math.ceil(window[3]*sy)]});
 }

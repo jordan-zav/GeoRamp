@@ -1,8 +1,8 @@
 {
   "name": "georamp",
-  "displayName": "GeoRamp",
-  "description": "Interactive GeoTIFF viewer with scientific and geophysical color ramps.",
-  "version": "0.2.1",
+  "displayName": "GeoRamp — GeoTIFF & Raster Viewer",
+  "description": "Open, overlay and explore geospatial rasters in VS Code with scientific color ramps.",
+  "version": "0.3.0",
   "publisher": "jordanzav",
   "license": "GPL-3.0-or-later",
   "repository": {
@@ -12,9 +12,22 @@
   "engines": {
     "vscode": "^1.96.0"
   },
-  "categories": ["Visualization", "Other"],
-  "keywords": ["geotiff", "tiff", "raster", "geophysics", "colormap", "gis"],
-  "activationEvents": ["onCustomEditor:georamp.viewer", "onCommand:georamp.openPreview"],
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "geotiff",
+    "tiff",
+    "raster",
+    "geophysics",
+    "colormap",
+    "gis"
+  ],
+  "activationEvents": [
+    "onCustomEditor:georamp.viewer",
+    "onCommand:georamp.openPreview"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -26,12 +39,20 @@
     "customEditors": [
       {
         "viewType": "georamp.viewer",
-        "displayName": "GeoRamp Viewer",
+        "displayName": "GeoRamp Raster Viewer",
         "selector": [
-          {"filenamePattern": "*.tif"},
-          {"filenamePattern": "*.tiff"},
-          {"filenamePattern": "*.TIF"},
-          {"filenamePattern": "*.TIFF"}
+          {
+            "filenamePattern": "*.tif"
+          },
+          {
+            "filenamePattern": "*.tiff"
+          },
+          {
+            "filenamePattern": "*.TIF"
+          },
+          {
+            "filenamePattern": "*.TIFF"
+          }
         ],
         "priority": "option"
       }
@@ -59,7 +80,7 @@
     }
   },
   "scripts": {
-    "test": "node scripts/run-tests.js",
+    "test": "node scripts/run-tests.js && node scripts/test-import-manager.js && node scripts/test-import-provider.js",
     "typecheck": "tsc --noEmit",
     "build": "node esbuild.js",
     "check:webview": "node scripts/validate-webview.js",
@@ -68,13 +89,16 @@
     "package:vsix": "vsce package --no-dependencies"
   },
   "dependencies": {
-    "geotiff": "^2.1.3"
+    "epsg-index": "^2.0.0",
+    "geotiff": "^2.1.3",
+    "proj4": "^2.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.96.0",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.0"
   }
 }

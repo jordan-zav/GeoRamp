@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
-import { rasterPixelToModel } from './geo';
+import { rasterPixelToModel, previewToReference } from './geo';
+import { LayerTree } from './layerTree';
 import { BUILTIN_PALETTES, normalizePaletteStops } from './palettes';
 
 export function getWebviewContent(
@@ -8,6 +9,9 @@ export function getWebviewContent(
   fileName: string
 ): string {
   const nonce = getNonce();
+  const projectionUri = webview.asWebviewUri
+    ? webview.asWebviewUri(extensionUri.with({path:extensionUri.path + '/dist/projection.js'})).toString()
+    : 'projection.js';
   const palettesJson = JSON.stringify(BUILTIN_PALETTES);
   const normalizePaletteStopsSource = normalizePaletteStops.toString();
   const rasterPixelToModelSource = rasterPixelToModel.toString();
@@ -242,7 +246,9 @@ export function getWebviewContent(
       flex: 1;
       position: relative;
       overflow: hidden;
-      background-color: #20242b;
+      background-color: var(--vscode-editor-background, #20242b);
+      background-image: repeating-conic-gradient(#88888812 0% 25%, transparent 0% 50%);
+      background-size: 20px 20px;
       user-select: none;
     }
     canvas#rasterCanvas {
@@ -340,12 +346,44 @@ export function getWebviewContent(
       width: 100%;
       height: 100%;
     }
+    .import-manager { width: 235px; flex: 0 0 235px; padding: 14px 10px;
+      display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+      background: var(--sidebar-bg); border-right: 1px solid var(--border-color); }
+    .source-list { flex: 1; overflow-y: auto; min-height: 80px; }
+    .source-row { display: flex; flex-wrap: wrap; margin-bottom: 6px; border: 1px solid var(--border-color); border-radius: 5px; }
+    .source-row.active { border-color: var(--accent-color); background: var(--vscode-list-activeSelectionBackground, #173b53); }
+    .source-open { flex: 1; min-width: 0; background: transparent; color: inherit; border: 0; text-align: left; padding: 10px 8px; cursor: pointer; }
+    .source-open strong, .source-open small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .source-open small { opacity: .65; margin-top: 5px; }
+    .source-remove { align-self: center; margin-right: 5px; padding: 5px 7px; }
+    .manager-hint { font-size: 11px; opacity: .7; line-height: 1.5; }
+    .visualization-workspace { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+    .content-area { min-width: 0; min-height: 0; }
+    .visualization-controls { width: 290px; flex: 0 0 290px; border-right: 0; border-left: 1px solid var(--border-color); }
+    .tab-content { min-height: 0; }
+    .active-source-title { padding: 10px 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border-color); }
+    @media (max-width: 1050px) {
+      .import-manager { width: 200px; flex-basis: 200px; }
+      .visualization-workspace { flex-direction: column; }
+      .visualization-controls { width: 100%; flex: 0 0 240px; border-left: 0; border-top: 1px solid var(--border-color); display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); }
+    }
+    @media (max-width: 600px) {
+      .import-manager { width: 160px; flex-basis: 160px; }
+      header { flex-wrap: wrap; gap: 6px; } .header-actions { flex-wrap: wrap; gap: 4px; }
+      .visualization-controls { grid-template-columns: 1fr; flex-basis: 180px; }
+    }
+    .layer-options { display:flex; width:100%; align-items:center; gap:5px; padding:0 6px 6px; }
+    .layer-options input[type=range] { width:65px; min-width:30px; flex:1; }
+    .layer-status { width:100%; padding:0 8px 5px; font-size:10px; color:var(--vscode-descriptionForeground,#bbb); }
+    .layer-visible { margin:8px 3px 8px 6px; }
+    .group-row { background:var(--vscode-sideBarSectionHeader-background,#ffffff0a); }
+    .import-manager { width:270px; flex-basis:270px; }
   </style>
 </head>
 <body>
   <header>
     <h1>
-      <span id="titleText" data-i18n="title">GeoRamp - Visor GeoTIFF</span>
+      <span id="titleText" data-i18n="title">GeoRamp — Visor rápido de rasters</span>
     </h1>
     <div class="header-actions">
       <select id="langSelect" style="width: 90px;">
@@ -353,12 +391,71 @@ export function getWebviewContent(
         <option value="en">English</option>
       </select>
       <button class="btn btn-secondary" id="btnExportPng"><span data-i18n="export_png">Exportar PNG</span></button>
+      <button class="btn btn-secondary" id="btnNativeZoom" title="1 pixel = 1 screen pixel">1:1</button>
       <button class="btn btn-secondary" id="btnResetView"><span data-i18n="reset_zoom">Reset Zoom</span></button>
     </div>
   </header>
 
   <div class="main-container">
-    <div class="sidebar">
+    <aside class="import-manager" aria-label="Importaciones">
+      <div class="section-card">
+        <label for="projectCrs">CRS del proyecto</label>
+        <div class="form-row"><input id="projectCrs" type="text" list="crsChoices" placeholder="EPSG:32718" /><button id="applyProjectCrs" class="btn">Aplicar</button></div>
+        <div id="projectCrsStatus" class="manager-hint" role="status">Automatico: primera capa con CRS</div>
+        <datalist id="crsChoices"></datalist>
+      </div>
+      <div class="section-title" data-i18n="imports">Capas</div>
+      <button class="btn" id="btnImportSources" data-i18n="add_rasters">+ Importar rasters</button>
+      <div class="form-row"><input id="groupName" type="text" placeholder="Nombre del grupo" aria-label="Nombre del grupo" /><button class="btn btn-secondary" id="btnAddGroup">+ Grupo</button></div>
+      <div class="manager-hint">Arrastra para agrupar y ordenar. Arriba = delante. Detalle en la capa seleccionada.</div>
+      <input id="sourceSearch" type="text" aria-label="Buscar raster" placeholder="Buscar raster..." />
+      <div id="sourceCount" class="manager-hint"></div>
+      <div id="sourceList" class="source-list" aria-label="Rasters importados"></div>
+      <p class="manager-hint" data-i18n="import_hint">Selecciona para editar. Marca para mostrar. Quitar no elimina el archivo.</p>
+    </aside>
+    <div class="visualization-workspace">
+    <!-- MAIN VIEWER -->
+    <div class="content-area">
+      <div class="active-source-title" id="activeSourceTitle">${escapeHtml(fileName)}</div>
+      <div class="tabs">
+        <div class="tab active" data-tab="viewerTab" data-i18n="tab_viewer">Visor en tiempo real</div>
+        <div class="tab" data-tab="breaksTab" data-i18n="tab_breaks">Histograma y Cortes</div>
+      </div>
+
+      <div class="tab-content active" id="viewerTab">
+        <div class="viewport" id="viewport">
+          <canvas id="compositionCanvas" style="position:absolute;left:0;top:0;pointer-events:none"></canvas><canvas id="rasterCanvas" style="visibility:hidden"></canvas><canvas id="detailCanvas" style="visibility:hidden;position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;image-rendering:pixelated;background-color:var(--vscode-editor-background,#20242b);background-image:repeating-conic-gradient(#88888812 0% 25%,transparent 0% 50%);background-size:20px 20px"></canvas>
+          <div class="status-overlay" id="statusOverlay">Cargando GeoTIFF...</div>
+          <div class="viewport-overlay" id="viewportOverlay">
+            <span id="posOverlay">Píxel: X: - Y: -</span>
+            <span id="geoOverlay">Coord: -</span>
+            <span id="valOverlay">Valor: -</span>
+            <span id="zoomOverlay">Zoom: 100%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="breaksTab">
+        <div class="breaks-container">
+          <div class="histogram-card">
+            <canvas id="histogramCanvas"></canvas>
+          </div>
+          <table class="breaks-table">
+            <thead>
+              <tr>
+                <th data-i18n="tbl_zone">Zona</th>
+                <th data-i18n="tbl_min">Mínimo</th>
+                <th data-i18n="tbl_max">Máximo</th>
+                <th data-i18n="tbl_color">Color</th>
+              </tr>
+            </thead>
+            <tbody id="breaksTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+    <aside class="sidebar visualization-controls" aria-label="Visualizaci&#243;n">
 
       <!-- 1. DATOS -->
       <div class="section-card">
@@ -367,6 +464,9 @@ export function getWebviewContent(
           <label data-i18n="band">Banda:</label>
           <select id="bandSelect"></select>
         </div>
+        <label for="sourceCrs">CRS de origen (esta capa)</label>
+        <input id="sourceCrs" type="text" list="crsChoices" placeholder="EPSG:..." />
+        <div class="form-row"><button id="assignSourceCrs" class="btn btn-secondary">Asignar CRS</button><button id="resetSourceCrs" class="btn btn-secondary">Original</button></div>
         <div class="stats-bar" id="statsBar">Cargando datos...</div>
       </div>
 
@@ -475,62 +575,28 @@ export function getWebviewContent(
         </div>
       </div>
 
-    </div>
-
-    <!-- MAIN VIEWER -->
-    <div class="content-area">
-      <div class="tabs">
-        <div class="tab active" data-tab="viewerTab" data-i18n="tab_viewer">Visor en tiempo real</div>
-        <div class="tab" data-tab="breaksTab" data-i18n="tab_breaks">Histograma y Cortes</div>
-      </div>
-
-      <div class="tab-content active" id="viewerTab">
-        <div class="viewport" id="viewport">
-          <canvas id="rasterCanvas"></canvas>
-          <div class="status-overlay" id="statusOverlay">Cargando GeoTIFF...</div>
-          <div class="viewport-overlay" id="viewportOverlay">
-            <span id="posOverlay">Píxel: X: - Y: -</span>
-            <span id="geoOverlay">Coord: -</span>
-            <span id="valOverlay">Valor: -</span>
-            <span id="zoomOverlay">Zoom: 100%</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="tab-content" id="breaksTab">
-        <div class="breaks-container">
-          <div class="histogram-card">
-            <canvas id="histogramCanvas"></canvas>
-          </div>
-          <table class="breaks-table">
-            <thead>
-              <tr>
-                <th data-i18n="tbl_zone">Zona</th>
-                <th data-i18n="tbl_min">Mínimo</th>
-                <th data-i18n="tbl_max">Máximo</th>
-                <th data-i18n="tbl_color">Color</th>
-              </tr>
-            </thead>
-            <tbody id="breaksTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-
+    </aside>
     </div>
   </div>
 
+  <script nonce="${nonce}" src="${escapeHtml(projectionUri)}"></script>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    const projection = GeoRampProjection;
     const BUILTIN_PALETTES = ${palettesJson};
     const normalizePaletteStops = ${normalizePaletteStopsSource};
     const rasterPixelToModel = ${rasterPixelToModelSource};
+    const previewToReference = ${previewToReference.toString()};
+    const LayerTree = ${LayerTree.toString()};
 
     // Dictionary
     const I18N = {
       es: {
-        title: "GeoRamp - Visor GeoTIFF",
+        title: "GeoRamp — Visor rápido de rasters",
         export_png: "Exportar PNG",
-        reset_zoom: "Reset Zoom",
+        imports: "Capas", add_rasters: "+ Importar rasters",
+        import_hint: "Selecciona para editar. Marca para mostrar. Quitar no elimina el archivo.",
+        reset_zoom: "Ajustar vista",
         sec_data: "1. Datos",
         band: "Banda:",
         sec_ramp: "2. Rampa de color",
@@ -584,9 +650,11 @@ export function getWebviewContent(
         imported_ramp: "Rampa importada",
       },
       en: {
-        title: "GeoRamp - GeoTIFF Viewer",
+        title: "GeoRamp — GeoTIFF & Raster Viewer",
         export_png: "Export PNG",
-        reset_zoom: "Reset Zoom",
+        imports: "Layers", add_rasters: "+ Import rasters",
+        import_hint: "Select a raster to view it. Removing an entry does not delete the file.",
+        reset_zoom: "Fit view",
         sec_data: "1. Data",
         band: "Band:",
         sec_ramp: "2. Color Ramp",
@@ -710,13 +778,316 @@ export function getWebviewContent(
     }
     function standardNormalCdf(x) { return 0.5 * (1 + errorFunction(x / Math.SQRT2)); }
 
+    const detailCanvas = document.getElementById("detailCanvas");
+    let detail = null, shading = null, detailTimer, probeTimer;
+    let detailId = 0, probeId = 0;
+    const detailLabel = document.createElement("span");
+    document.getElementById("zoomOverlay").parentElement.appendChild(detailLabel);
+    function scheduleDetail() {
+      clearTimeout(detailTimer); detailId++; detail = null; detailCanvas.hidden = true;
+      if (!rasterInfo) return;
+      detailLabel.textContent = currentLang === "es" ? "Vista general / estadisticas estimadas" : "Overview / estimated statistics";
+      try{if (pixelScale()*zoom*rasterInfo.width/rasterInfo.previewWidth <= 1 || (rasterInfo.width===rasterInfo.previewWidth && rasterInfo.height===rasterInfo.previewHeight))return;}catch{return;}
+      const id = detailId;
+      detailTimer = setTimeout(() => {
+        if(projectCrs){
+          try{
+            const rect=viewport.getBoundingClientRect(),window=projection.sourceWindow(rasterInfo,projectCrs,camera(),rect.width,rect.height);
+            if(!window)return;
+            detailLabel.textContent="Cargando detalle reproyectado...";
+            const scale=pixelScale()*zoom;
+            vscode.postMessage({type:"detail",id,sourceId:rasterInfo.sourceId,band:rasterInfo.activeBand,window,
+              width:Math.min(2048,Math.ceil((window[2]-window[0])*scale)),height:Math.min(2048,Math.ceil((window[3]-window[1])*scale))});
+          }catch{}
+          return;
+        }
+        const sx = rasterInfo.width / rasterInfo.previewWidth, sy = rasterInfo.height / rasterInfo.previewHeight;
+        const rect = viewport.getBoundingClientRect();
+        const x0 = Math.max(0, Math.floor(-panX / zoom * sx)), y0 = Math.max(0, Math.floor(-panY / zoom * sy));
+        const x1 = Math.min(rasterInfo.width, Math.ceil((rect.width-panX)/zoom*sx));
+        const y1 = Math.min(rasterInfo.height, Math.ceil((rect.height-panY)/zoom*sy));
+        if (x1 <= x0 || y1 <= y0) return;
+        detailLabel.textContent = currentLang === "es" ? "Cargando detalle..." : "Loading detail...";
+        vscode.postMessage({type:"detail", id, sourceId:rasterInfo.sourceId, band:rasterInfo.activeBand, window:[x0,y0,x1,y1],
+          width:Math.ceil((x1-x0)/sx*zoom), height:Math.ceil((y1-y0)/sy*zoom)});
+      }, 180);
+    }
+    function drawDetail() {
+      if (!detail || !shading || !rasterInfo) return;
+      const [x0,y0,x1,y1] = detail.window;
+      const sx = rasterInfo.previewWidth/rasterInfo.width*zoom, sy = rasterInfo.previewHeight/rasterInfo.height*zoom;
+      drawRasterCanvas(detail.width, detail.height, detail.data, shading.values, shading.colours, shading.mode, detailCanvas);
+      detailCanvas.style.transform = "translate("+(panX+x0*sx)+"px,"+(panY+y0*sy)+"px) scale("+((x1-x0)*sx/detail.width)+","+((y1-y0)*sy/detail.height)+")";
+      detailCanvas.hidden = false;
+      renderComposition();
+    }
+    const styleInputs = ["distSelect","numBinsInput","sigmaInput","chkShiftLog","renderModeSelect",
+      "chkManualLimits","manualMinInput","manualMaxInput","chkPercentiles","pctLowInput","pctHighInput","chkReverse"];
+    function captureStyle() {
+      return {palette:selectedPalette, reversed:isReversed, inputs:styleInputs.map(id => {
+        const input = document.getElementById(id); return {id, value:input.value, checked:input.checked};
+      })};
+    }
+    const defaultStyle = captureStyle(), sourceStyles = new Map();
+    function restoreStyle(id, band) {
+      const style = sourceStyles.get(id + ":" + band) || defaultStyle;
+      selectedPalette = style.palette; isReversed = style.reversed;
+      for (const saved of style.inputs) {
+        const input = document.getElementById(saved.id); input.value = saved.value;
+        if (saved.checked !== undefined) input.checked = saved.checked;
+      }
+      manualMinInput.disabled = manualMaxInput.disabled = !chkManualLimits.checked;
+      pctLowInput.disabled = pctHighInput.disabled = !chkPercentiles.checked;
+      document.getElementById("normalSigmaRow").style.display = distSelect.value === "normal" ? "flex" : "none";
+      document.getElementById("logShiftRow").style.display = distSelect.value === "log_linear" ? "flex" : "none";
+    }
+    let sourceEntries = [], activeSourceId = "";
+    const savedProject=vscode.getState?.() || {};
+    let projectCrs=savedProject.projectCrs || null, viewInitialized=false;
+    const sourceAssignments=new Map(Object.entries(savedProject.sourceAssignments || {}));
+    function camera(){return {zoom,panX,panY};}
+    function persistProject(){vscode.setState?.({...savedProject,projectCrs,sourceAssignments:Object.fromEntries(sourceAssignments)});}
+    function prepareGeo(info){
+      if(sourceAssignments.has(info.sourceId))info.geo={...info.geo,assignedCrs:sourceAssignments.get(info.sourceId)};
+      return info;
+    }
+    function projectLabel(){
+      document.getElementById("projectCrs").value=projectCrs || "";
+      document.getElementById("projectCrsStatus").textContent=projectCrs ? projectCrs+" / "+projection.describe(projectCrs).name : "Sin CRS de proyecto";
+    }
+    function pixelScale(info=rasterInfo){
+      if(!info)return 1;
+      if(!projectCrs)return info.previewWidth/info.width;
+      const map=projection.mapper(info,projectCrs),a=map.forward(info.width/2,info.height/2),b=map.forward(info.width/2+1,info.height/2);
+      return Math.hypot(b[0]-a[0],b[1]-a[1]);
+    }
+    for(const id of ["projectCrs","sourceCrs"]){
+      document.getElementById(id).addEventListener("input",event=>{
+        const list=document.getElementById("crsChoices");list.replaceChildren();
+        for(const crs of projection.search(event.target.value)){
+          const option=document.createElement("option");option.value=crs.id;option.label=crs.name;list.appendChild(option);
+        }
+      });
+    }
+    document.getElementById("applyProjectCrs").addEventListener("click",()=>{
+      try {
+        const next=projection.describe(document.getElementById("projectCrs").value).id;
+        const rect=viewport.getBoundingClientRect();
+        let nextCamera=null;
+        if(projectCrs && viewInitialized){
+          const center=[(rect.width/2-panX)/zoom,-(rect.height/2-panY)/zoom];
+          const mapped=projection.convert(projectCrs,next,center),adjacent=projection.convert(projectCrs,next,[center[0]+1/zoom,center[1]]);
+          const scale=1/Math.hypot(mapped[0]-adjacent[0],mapped[1]-adjacent[1]);
+          if(!Number.isFinite(scale) || scale<=0)throw new Error("Vista fuera del dominio del CRS");
+          nextCamera={zoom:scale,panX:rect.width/2-mapped[0]*scale,panY:rect.height/2+mapped[1]*scale};
+        }
+        projectCrs=next;projectLabel();persistProject();
+        if(nextCamera){({zoom,panX,panY}=nextCamera);updateTransform();}else resetTransform();
+        renderSources();
+      }catch(error){document.getElementById("projectCrsStatus").textContent=error.message;}
+    });
+    function assignSource(reset=false){
+      if(!rasterInfo)return;
+      try{
+        if(reset){sourceAssignments.delete(rasterInfo.sourceId);delete rasterInfo.geo.assignedCrs;}
+        else {const crs=projection.describe(document.getElementById("sourceCrs").value).id;
+          sourceAssignments.set(rasterInfo.sourceId,crs);rasterInfo.geo.assignedCrs=crs;}
+        const view=layerViews.get(rasterInfo.sourceId);if(view)view.info.geo={...rasterInfo.geo};
+        if(!projectCrs){projectCrs=projection.describe(rasterInfo.geo.assignedCrs || rasterInfo.geo.epsg).id;viewInitialized=false;}
+        persistProject();projectLabel();if(!viewInitialized)resetTransform();else updateTransform();renderSources();
+      }catch(error){document.getElementById("projectCrsStatus").textContent=error.message;}
+    }
+    document.getElementById("assignSourceCrs").addEventListener("click",()=>assignSource());
+    document.getElementById("resetSourceCrs").addEventListener("click",()=>assignSource(true));
+    const tree = new LayerTree(), layerViews = new Map(), layerErrors = new Map();
+    let pendingLayer = null, groupSequence = 0;
+    const compositionCanvas = document.getElementById("compositionCanvas");
+    function syncLayers() {
+      const ids = new Set(sourceEntries.map(source => source.id));
+      if (pendingLayer && !ids.has(pendingLayer)) pendingLayer=null;
+      for (const node of [...tree.nodes]) if (node.kind === "layer" && !ids.has(node.id)) {
+        tree.remove(node.id); layerViews.delete(node.id); layerErrors.delete(node.id);
+      }
+      for (const source of sourceEntries) tree.add(source.id,source.name);
+      loadNextLayer();
+    }
+    function loadNextLayer() {
+      if (pendingLayer) return;
+      const next = tree.layers().find(layer => layer.visible && !layerViews.has(layer.id) && !layerErrors.has(layer.id));
+      if (next) { pendingLayer = next.id; vscode.postMessage({type:"layerPreview",id:next.id}); }
+    }
+    function saveLayerView(info, canvas) {
+      prepareGeo(info);
+      const copy = document.createElement("canvas"); copy.dataset.sourceId=info.sourceId; copy.width=canvas.width; copy.height=canvas.height;
+      copy.getContext("2d").drawImage(canvas,0,0);
+      const {previewData,sampleData,previewDataBuffer,sampleDataBuffer,...metadata}=info;
+      layerErrors.delete(info.sourceId);
+      layerViews.set(info.sourceId,{info:metadata,canvas:copy});
+    }
+    function renderComposition() {
+      const rect=viewport.getBoundingClientRect();
+      compositionCanvas.width=Math.max(1,Math.round(rect.width)); compositionCanvas.height=Math.max(1,Math.round(rect.height));
+      const context=compositionCanvas.getContext("2d"); context.imageSmoothingEnabled=false;
+      if (!projectCrs && !rasterInfo) return;
+      for (const layer of tree.layers().reverse()) {
+        const view=layerViews.get(layer.id);
+        if (!layer.visible || !view || layer.opacity <= 0) continue;
+        try {
+          const surface=document.createElement("canvas");surface.width=compositionCanvas.width;surface.height=compositionCanvas.height;surface.dataset.sourceId=layer.id;
+          const target=surface.getContext("2d");target.imageSmoothingEnabled=false;
+          if(projectCrs){
+            projection.mapper(view.info,projectCrs);
+            if(layer.id===rasterInfo?.sourceId && detail && shading){
+              target.save();target.beginPath();target.rect(0,0,surface.width,surface.height);
+              projection.traceWindow(target,rasterInfo,projectCrs,camera(),detail.window);target.clip("evenodd");
+              projection.draw(target,view.canvas,view.info,projectCrs,camera());target.restore();
+              projection.draw(target,detailCanvas,rasterInfo,projectCrs,camera(),detail.window);
+            } else projection.draw(target,view.canvas,view.info,projectCrs,camera());
+          }else if(layer.id===rasterInfo?.sourceId){target.translate(panX,panY);target.scale(zoom,zoom);target.drawImage(view.canvas,0,0);}
+          else continue;
+          context.globalAlpha=layer.opacity;context.drawImage(surface,0,0);
+        }catch { /* The layer row explains unsupported or missing source CRS. */ }
+      }
+    }
+    function crsStatus(info){
+      if(!projectCrs)return info.geo?.crs || "Sin CRS";
+      try{projection.mapper(info,projectCrs);const source=projection.describe(info.geo.assignedCrs || info.geo.epsg);
+        return source.id+(source.id!==projectCrs ? " > "+projectCrs : "")+(info.geo.assignedCrs ? " (asignado)" : "")+(source.id!==projectCrs && (source.accuracy>0 || projection.describe(projectCrs).accuracy>0) ? " / datum aprox." : "");
+      }catch(error){return error.message;}
+    }
+
+    function renderSources() {
+      const list = document.getElementById("sourceList"); list.replaceChildren();
+      const query = document.getElementById("sourceSearch").value.toLowerCase();
+      document.getElementById("sourceCount").textContent = sourceEntries.length + (currentLang === "es" ? " capas / arriba = delante" : " layers / top = front");
+      const draw = (parent,depth) => {
+        for (const node of tree.nodes.filter(node => node.parent === parent)) {
+          const source=sourceEntries.find(source=>source.id===node.id);
+          if (query && node.kind === "layer" && !(node.name+source?.path).toLowerCase().includes(query)) continue;
+          const row=document.createElement("div"); row.className="source-row"+(node.id===activeSourceId ? " active" : "")+(node.kind==="group" ? " group-row" : "");
+          row.style.marginLeft=depth*12+"px"; row.draggable=true; row.dataset.id=node.id;
+          row.addEventListener("dragstart",event=>event.dataTransfer.setData("text/plain",node.id));
+          row.addEventListener("dragover",event=>event.preventDefault());
+          row.addEventListener("drop",event=>{event.preventDefault();event.stopPropagation();
+            tree.move(event.dataTransfer.getData("text/plain"),node.kind==="group" ? node.id : node.parent,node.kind==="group" ? undefined : node.id);
+            renderSources();renderComposition();});
+          const visible=document.createElement("input");visible.type="checkbox";visible.className="layer-visible";visible.checked=node.visible;
+          visible.setAttribute("aria-label",(currentLang==="es" ? "Mostrar " : "Show ")+node.name);
+          visible.addEventListener("change",()=>{node.visible=visible.checked;loadNextLayer();renderComposition();});
+          const open=document.createElement("button");open.className="source-open";open.title=source?.path || node.name;
+          const name=document.createElement("strong");name.textContent=(node.kind==="group" ? (node.expanded ? "\u25be " : "\u25b8 ") : "")+node.name;open.appendChild(name);
+          open.setAttribute("aria-pressed",String(node.id===activeSourceId));
+          if (node.kind === "group") {
+            open.title = "F2 para renombrar";
+            const rename = () => {
+              const input=document.createElement("input");input.type="text";input.value=node.name;
+              input.setAttribute("aria-label","Nombre del grupo");name.replaceWith(input);
+              input.addEventListener("click",event=>event.stopPropagation());
+              let done=false;
+              const commit=()=>{if(done)return;done=true;node.name=input.value.trim() || node.name;renderSources();};
+              input.addEventListener("blur",commit);
+              input.addEventListener("keydown",event=>{if(event.key==="Enter")commit();if(event.key==="Escape"){done=true;renderSources();}});
+              input.focus();input.select();
+            };
+
+            open.addEventListener("keydown",event=>{if(event.key==="F2"){event.preventDefault();rename();}});
+          }
+          open.addEventListener("click",()=>{if(node.kind==="group"){node.expanded=!node.expanded;renderSources();}
+            else vscode.postMessage({type:"selectSource",id:node.id});});
+          const remove=document.createElement("button");remove.className="btn btn-secondary source-remove";remove.textContent="\u00d7";
+          remove.title="Quitar "+node.name;remove.setAttribute("aria-label",remove.title);
+          remove.addEventListener("click",()=>{if(node.kind==="group"){tree.remove(node.id);renderSources();renderComposition();}
+            else vscode.postMessage({type:"removeSource",id:node.id});});
+          row.append(visible,open,remove);
+          const options=document.createElement("div");options.className="layer-options";
+          const opacity=document.createElement("input");opacity.type="range";opacity.min="0";opacity.max="100";opacity.value=String(node.opacity*100);opacity.setAttribute("aria-label","Opacidad "+node.name);
+          const value=document.createElement("span");value.textContent=opacity.value+"%";
+          opacity.addEventListener("input",()=>{node.opacity=Number(opacity.value)/100;value.textContent=opacity.value+"%";renderComposition();});
+          options.append(opacity,value);
+          for(const direction of [-1,1]) {
+            const button=document.createElement("button");button.className="btn btn-secondary";button.textContent=direction<0 ? "\u2191" : "\u2193";
+            button.title=direction<0 ? "Subir" : "Bajar";
+            button.addEventListener("click",()=>{const siblings=tree.nodes.filter(n=>n.parent===node.parent),index=siblings.indexOf(node),target=index+direction;
+              if(target<0 || target>=siblings.length)return;
+              tree.move(node.id,node.parent,direction<0 ? siblings[target].id : siblings[target+1]?.id);renderSources();renderComposition();});options.appendChild(button);
+          }
+          if(node.parent){const ungroup=document.createElement("button");ungroup.className="btn btn-secondary";ungroup.textContent="\u21b0";ungroup.title="Sacar del grupo";
+            ungroup.addEventListener("click",()=>{tree.move(node.id,null);renderSources();renderComposition();});options.appendChild(ungroup);}
+          row.appendChild(options);
+          if(node.kind==="layer") {
+            const view=layerViews.get(node.id),status=document.createElement("div");status.className="layer-status";
+            status.textContent=layerErrors.get(node.id) || (!view ? "Cargando vista..." : crsStatus(view.info));
+            row.appendChild(status);
+          }
+          list.appendChild(row);
+          if(node.kind==="group" && (node.expanded || query))draw(node.id,depth+1);
+        }
+      };draw(null,0);
+    }
+    document.getElementById("btnAddGroup").addEventListener("click",()=>{
+      const input=document.getElementById("groupName");tree.add("group:"+(++groupSequence),input.value.trim() || "Grupo "+groupSequence,"group");input.value="";renderSources();
+    });
+    document.getElementById("sourceList").addEventListener("dragover",event=>event.preventDefault());
+    document.getElementById("sourceList").addEventListener("drop",event=>{event.preventDefault();tree.move(event.dataTransfer.getData("text/plain"),null);renderSources();renderComposition();});
+    document.getElementById("btnImportSources").addEventListener("click", () => vscode.postMessage({type:"importSources"}));
+    document.getElementById("sourceSearch").addEventListener("input", renderSources);
+    function clearRaster() {
+      if (rasterInfo) sourceStyles.set(rasterInfo.sourceId + ":" + rasterInfo.activeBand, captureStyle());
+      clearTimeout(detailTimer); clearTimeout(probeTimer); detailId++; probeId++;
+      detail = null; rasterInfo = null; detailCanvas.hidden = true;
+      ctx.clearRect(0,0,rasterCanvas.width,rasterCanvas.height);
+      bandSelect.replaceChildren(); bandSelect.disabled = true;
+      document.getElementById("statsBar").textContent = "";
+      document.getElementById("breaksTableBody").replaceChildren();
+      const hist = document.getElementById("histogramCanvas"); hist.getContext("2d").clearRect(0,0,hist.width,hist.height);
+      for (const id of ["posOverlay","geoOverlay","valOverlay","zoomOverlay"]) document.getElementById(id).textContent = "-";
+      detailLabel.textContent = "";
+      renderComposition();
+    }
     // Init messaging
     window.addEventListener("message", (event) => {
       const message = event.data;
-      if (message.type === "init") {
-        rasterInfo = message.data;
-        rasterInfo.previewData = new Float32Array(message.data.previewDataBuffer);
-        rasterInfo.sampleData = new Float32Array(message.data.sampleDataBuffer);
+      if (message.type === "sources") {
+        sourceEntries = message.sources; activeSourceId = message.activeId; syncLayers(); renderSources(); renderComposition();
+      } else if (message.type === "layerPreview") {
+        if (pendingLayer === message.id) pendingLayer=null;
+        if (tree.nodes.some(node=>node.id===message.id) && !layerViews.has(message.id) && message.id !== rasterInfo?.sourceId) {
+          const info=message.data,data=new Float64Array(info.previewDataBuffer),canvas=document.createElement("canvas");
+          const values=Array.from({length:39},(_,index)=>info.stats.minimum+(info.stats.maximum-info.stats.minimum)*index/38);
+          const colours=Array.from({length:39},(_,index)=>interpolateColorHex(BUILTIN_PALETTES[0].stops,index/38));
+          drawRasterCanvas(info.previewWidth,info.previewHeight,data,values,colours,"continuous",canvas);
+          saveLayerView(info,canvas);
+        }
+        loadNextLayer();renderSources();renderComposition();
+      } else if (message.type === "layerError") {
+        if(pendingLayer===message.id)pendingLayer=null;
+        layerErrors.set(message.id,message.message);loadNextLayer();renderSources();
+      } else if (message.type === "empty") {
+        clearRaster(); statusOverlay.hidden = false;
+        statusOverlay.textContent = currentLang === "es" ? "Importa un raster para comenzar" : "Import a raster to start";
+        document.getElementById("activeSourceTitle").textContent = "GeoRamp";
+      } else if (message.type === "detail" && message.id === detailId && rasterInfo && message.band === rasterInfo.activeBand) {
+        detail = {...message, data:new Float64Array(message.buffer)}; drawDetail();
+        const native = detail.width === detail.window[2]-detail.window[0] && detail.height === detail.window[3]-detail.window[1];
+        detailLabel.textContent = native ? (currentLang === "es" ? "Resolucion original / estadisticas estimadas" : "Native resolution / estimated statistics") : (currentLang === "es" ? "Detalle / estadisticas estimadas" : "Detail / estimated statistics");
+      } else if (message.type === "probe" && message.id === probeId && rasterInfo && message.band === rasterInfo.activeBand) {
+        const value = new Float64Array(message.buffer)[0];
+        document.getElementById("valOverlay").textContent = (currentLang === "es" ? "Valor original: " : "Source value: ")+(Number.isFinite(value) ? String(value) : "NoData");
+      } else if (message.type === "detailError") {
+        if (message.kind === "detail" && message.id === detailId) detailLabel.textContent = message.message;
+        if (message.kind === "probe" && message.id === probeId) document.getElementById("valOverlay").textContent = message.message;
+      } else if (message.type === "init") {
+        rasterInfo = prepareGeo(message.data);
+        if(!projectCrs && (rasterInfo.geo?.assignedCrs || rasterInfo.geo?.epsg)){
+          try{projectCrs=projection.describe(rasterInfo.geo.assignedCrs || rasterInfo.geo.epsg).id;viewInitialized=false;persistProject();}catch{}
+        }
+        try{projectLabel();}catch{projectCrs=null;}
+        document.getElementById("sourceCrs").value=rasterInfo.geo.assignedCrs || (rasterInfo.geo.epsg ? "EPSG:"+rasterInfo.geo.epsg : "");
+        restoreStyle(rasterInfo.sourceId, rasterInfo.activeBand);
+        document.getElementById("activeSourceTitle").textContent = rasterInfo.fileName;
+        document.title = "GeoRamp - " + rasterInfo.fileName;
+        rasterInfo.previewData = new Float64Array(message.data.previewDataBuffer);
+        rasterInfo.sampleData = new Float64Array(message.data.sampleDataBuffer);
         bandSelect.disabled = false;
         statusOverlay.hidden = true;
         initBandSelect();
@@ -724,8 +1095,10 @@ export function getWebviewContent(
         renderRampGrid();
         updateActiveRampBar();
         updateAndRender();
-        resetTransform();
+        if(!viewInitialized)resetTransform();else updateTransform();
       } else if (message.type === "loading") {
+        clearRaster();
+        document.getElementById("activeSourceTitle").textContent = sourceEntries.find(source => source.id === message.sourceId)?.name || "GeoRamp";
         bandSelect.disabled = true;
         statusOverlay.textContent = I18N[currentLang].loading;
         statusOverlay.hidden = false;
@@ -738,6 +1111,8 @@ export function getWebviewContent(
 
     langSelect.addEventListener("change", (e) => {
       currentLang = e.target.value;
+      renderSources();
+      document.getElementById("sourceSearch").placeholder = currentLang === "es" ? "Buscar raster..." : "Search rasters...";
       updateLanguage();
     });
 
@@ -767,7 +1142,7 @@ export function getWebviewContent(
       }
     }
     bandSelect.addEventListener("change", (e) => {
-      vscode.postMessage({ type: "changeBand", band: parseInt(e.target.value) });
+      vscode.postMessage({ type: "changeBand", sourceId:rasterInfo?.sourceId, band: parseInt(e.target.value) });
     });
 
     function updateStatsUI() {
@@ -1191,12 +1566,13 @@ export function getWebviewContent(
       const colours = Array.from({ length: bins }, (_, i) => interpolateColorHex(stops, i / Math.max(1, bins - 1)));
 
       drawRasterCanvas(rasterInfo.previewWidth, rasterInfo.previewHeight, rasterInfo.previewData, breakResult.values, colours, breakResult.renderMode);
+      saveLayerView(rasterInfo,rasterCanvas);
+      shading = {values:breakResult.values, colours, mode:breakResult.renderMode}; drawDetail(); renderComposition(); renderSources();
       drawHistogramAndBreaks(breakResult, stops, breakResult.counts, min, max);
     }
 
-    function drawRasterCanvas(width, height, data, values, colours, renderMode) {
-      rasterCanvas.width = width;
-      rasterCanvas.height = height;
+    function drawRasterCanvas(width, height, data, values, colours, renderMode, target = rasterCanvas) {
+      const ctx = target.getContext("2d"); target.width = width; target.height = height;
       ctx.imageSmoothingEnabled = false;
 
       const imgData = ctx.createImageData(width, height);
@@ -1278,14 +1654,26 @@ export function getWebviewContent(
 
     // Viewport Pan & Zoom Controls (Focal Point at Mouse Cursor)
     function updateTransform() {
+      scheduleDetail();
+      renderComposition();
       rasterCanvas.style.transform = \`translate(\${panX}px, \${panY}px) scale(\${zoom})\`;
-      document.getElementById("zoomOverlay").textContent = \`\${I18N[currentLang].zoom}: \${Math.round(zoom * 100)}%\`;
+      try{document.getElementById("zoomOverlay").textContent = "Zoom: "+Math.round(zoom*pixelScale()*100)+"%";}catch{document.getElementById("zoomOverlay").textContent="CRS de origen pendiente";}
     }
 
     function resetTransform() {
       if (!rasterInfo) return;
       const vRect = viewport.getBoundingClientRect();
       if (vRect.width <= 0 || vRect.height <= 0) return;
+      if(projectCrs){
+        try{const box=projection.bounds(rasterInfo,projectCrs);
+          zoom=Math.min(vRect.width*0.9/(box[2]-box[0]),vRect.height*0.9/(box[3]-box[1]));
+          if(!Number.isFinite(zoom) || zoom<=0)return;
+          panX=vRect.width/2-(box[0]+box[2])/2*zoom;panY=vRect.height/2+(box[1]+box[3])/2*zoom;
+          viewInitialized=true;updateTransform();
+        }catch(error){document.getElementById("projectCrsStatus").textContent=error.message;}
+        return;
+      }
+      viewInitialized=true;
       const fitZoom = Math.min(
         (vRect.width * 0.9) / rasterInfo.previewWidth,
         (vRect.height * 0.9) / rasterInfo.previewHeight
@@ -1310,31 +1698,39 @@ export function getWebviewContent(
         updateTransform();
       }
 
+      clearTimeout(probeTimer); probeId++;
       // Read raster pixel & real geospatial map coordinates under cursor
       if (rasterInfo) {
         const vRect = viewport.getBoundingClientRect();
         const mouseX = e.clientX - vRect.left;
         const mouseY = e.clientY - vRect.top;
 
-        const canvasX = (mouseX - panX) / zoom;
-        const canvasY = (mouseY - panY) / zoom;
+        let canvasX=(mouseX-panX)/zoom,canvasY=(mouseY-panY)/zoom;
+        if(projectCrs){
+          try{const pixel=projection.screenToPixel(rasterInfo,projectCrs,camera(),mouseX,mouseY);
+            canvasX=pixel[0]*rasterInfo.previewWidth/rasterInfo.width;canvasY=pixel[1]*rasterInfo.previewHeight/rasterInfo.height;
+          }catch{return;}
+        }
 
         const px = Math.floor(canvasX);
         const py = Math.floor(canvasY);
 
-        if (px >= 0 && px < rasterInfo.previewWidth && py >= 0 && py < rasterInfo.previewHeight) {
+        if (mouseX >= 0 && mouseY >= 0 && mouseX < vRect.width && mouseY < vRect.height && px >= 0 && px < rasterInfo.previewWidth && py >= 0 && py < rasterInfo.previewHeight) {
           const idx = py * rasterInfo.previewWidth + px;
           const val = rasterInfo.previewData[idx];
 
-          const sourcePixelX = ((px + 0.5) * rasterInfo.width / rasterInfo.previewWidth) - 0.5;
-          const sourcePixelY = ((py + 0.5) * rasterInfo.height / rasterInfo.previewHeight) - 0.5;
-          const fullX = Math.max(0, Math.min(rasterInfo.width - 1, Math.round(sourcePixelX)));
-          const fullY = Math.max(0, Math.min(rasterInfo.height - 1, Math.round(sourcePixelY)));
+          const fullX = Math.min(rasterInfo.width-1, Math.floor(canvasX*rasterInfo.width/rasterInfo.previewWidth));
+          const fullY = Math.min(rasterInfo.height-1, Math.floor(canvasY*rasterInfo.height/rasterInfo.previewHeight));
+          const sourcePixelX = fullX, sourcePixelY = fullY;
+          document.getElementById("posOverlay").textContent = "X: "+fullX+" Y: "+fullY;
+          document.getElementById("valOverlay").textContent = (currentLang === "es" ? "Muestra: " : "Sample: ")+(Number.isFinite(val) ? val.toPrecision(6) : "NoData");
+          const id = probeId;
+          if (!isDragging) probeTimer = setTimeout(() => vscode.postMessage({type:"probe", id,
+            sourceId:rasterInfo.sourceId, band:rasterInfo.activeBand, window:[fullX,fullY,fullX+1,fullY+1], width:1,height:1}), 100);
 
-          document.getElementById("posOverlay").textContent = \`\${I18N[currentLang].pixel}: X: \${fullX} Y: \${fullY}\`;
-          document.getElementById("valOverlay").textContent = \`\${I18N[currentLang].value}: \${Number.isFinite(val) ? val.toPrecision(6) : "NoData"}\`;
-
-          if (rasterInfo.geo && rasterInfo.geo.hasGeo && rasterInfo.geo.transform) {
+          if(projectCrs){
+            document.getElementById("geoOverlay").textContent=projectCrs+" X: "+((mouseX-panX)/zoom).toFixed(4)+" Y: "+(-(mouseY-panY)/zoom).toFixed(4);
+          } else if (rasterInfo.geo && rasterInfo.geo.hasGeo && rasterInfo.geo.transform) {
             const [realX, realY] = rasterPixelToModel(
               rasterInfo.geo.transform,
               sourcePixelX,
@@ -1356,6 +1752,11 @@ export function getWebviewContent(
 
     window.addEventListener("mouseup", () => { isDragging = false; });
 
+    viewport.addEventListener("mouseleave", () => {
+      clearTimeout(probeTimer); probeId++;
+      for (const name of ["valOverlay","posOverlay","geoOverlay"]) document.getElementById(name).textContent = "-";
+    });
+    new ResizeObserver(() => { if (rasterInfo) {if(viewInitialized)updateTransform();else resetTransform();} }).observe(viewport);
     // Focal Point Zoom at Mouse Cursor Position
     viewport.addEventListener("wheel", (e) => {
       e.preventDefault();
@@ -1368,7 +1769,7 @@ export function getWebviewContent(
       const canvasY = (mouseY - panY) / zoom;
 
       const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
-      const newZoom = Math.min(50, Math.max(0.05, zoom * zoomFactor));
+      const newZoom = Math.min(1e12, Math.max(1e-12, zoom * zoomFactor));
 
       // Keep (canvasX, canvasY) locked under (mouseX, mouseY)
       panX = mouseX - canvasX * newZoom;
@@ -1378,6 +1779,14 @@ export function getWebviewContent(
       updateTransform();
     });
 
+    document.getElementById("btnNativeZoom").addEventListener("click", () => {
+      if (!rasterInfo) return;
+      const rect = viewport.getBoundingClientRect();
+      const cx = (rect.width/2-panX)/zoom, cy = (rect.height/2-panY)/zoom;
+      try{zoom=1/pixelScale();}catch{return;}
+      panX = rect.width/2-cx*zoom; panY = rect.height/2-cy*zoom;
+      updateTransform();
+    });
     document.getElementById("btnResetView").addEventListener("click", resetTransform);
 
     // Tabs
@@ -1394,8 +1803,8 @@ export function getWebviewContent(
     document.getElementById("btnExportPng").addEventListener("click", () => {
       if (!rasterInfo) return;
       vscode.postMessage({
-        type: "savePng",
-        dataUrl: rasterCanvas.toDataURL("image/png")
+        type: "savePng", sourceId:rasterInfo.sourceId,
+        dataUrl: compositionCanvas.toDataURL("image/png")
       });
     });
 
