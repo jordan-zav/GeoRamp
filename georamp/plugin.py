@@ -1866,7 +1866,7 @@ class GeoRampPlugin:
 
     def initGui(self):
         self.action = QAction(
-            QIcon(os.path.join(os.path.dirname(__file__), "icon.svg")),
+            QIcon(os.path.join(os.path.dirname(__file__), "icon.png")),
             TEXT["es"]["menu"],
             self.iface.mainWindow(),
         )

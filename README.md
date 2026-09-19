@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="georamp/icon.svg" alt="GeoRamp" width="112">
+  <img src="assets/branding/georamp-logo.png" alt="GeoRamp" width="360">
 
 # GeoRamp
 
