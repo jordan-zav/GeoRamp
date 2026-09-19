@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.0 — Primera versión para publicación
+
+- Selección multicapa alfabética, por arrastre y por grupos de QGIS.
+- Visor en tiempo real vinculado a la primera capa seleccionada.
+- Galería de rampas adaptable a la altura de la ventana.
+- Histograma con dibujo directo, coordenadas del cursor, media, mediana y moda aproximada.
+- Cobertura observada de muestras dentro de media ± n desviaciones estándar.
+- Saturación de valores extremos al usar percentiles y zonas discretas.
+
+## Historial de desarrollo interno
+
+Los números siguientes corresponden a compilaciones internas anteriores al
+reinicio de numeración para la primera publicación 1.0.0.
+
+## 1.5.0 - 2026-09-19
+
+- Selección multicapa alfabética mediante arrastre, Ctrl o Shift.
+- Vista alternativa que reproduce la jerarquía del Administrador de capas de QGIS.
+- Selección de grupos para incluir todos sus rásteres descendientes.
+
 ## 1.4.2 - 2026-08-25
 
 - Muestreo determinista de 512 por 512 compartido con la extensión de VS Code.

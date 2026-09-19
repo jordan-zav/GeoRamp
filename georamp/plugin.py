@@ -1,19 +1,21 @@
 import math
 import os
 import re
+import bisect
 
 from qgis.PyQt.QtCore import QSize, Qt, QTimer
 from qgis.PyQt.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from qgis.PyQt.QtWidgets import (
-    QAction, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QAction, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QProgressDialog, QPushButton, QSpinBox, QTabWidget, QTableWidget,
-    QTableWidgetItem, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
+    QTableWidgetItem, QToolButton, QTreeWidget, QTreeWidgetItem, QSplitter,
+    QVBoxLayout, QWidget, QWidgetAction,
 )
 from qgis.core import (
     QgsApplication, QgsColorRampLegendNodeSettings, QgsColorRampShader,
-    QgsMapLayerType, QgsProject,
+    QgsLayerTreeGroup, QgsLayerTreeLayer, QgsMapLayerType, QgsProject,
     QgsRasterLayer, QgsRasterShader, QgsSettings, QgsTask,
     QgsSingleBandPseudoColorRenderer,
 )
@@ -40,6 +42,9 @@ TEXT = {
         "band": "Banda:",
         "multi_mode": "Aplicar a varias capas",
         "multi_select": "Seleccionar capas...",
+        "multi_alpha": "Alfabético",
+        "multi_layer_manager": "Administrador de capas",
+        "multi_help": "Arrastra, o usa Ctrl/Shift, para seleccionar varias. En Administrador de capas, seleccionar un grupo incluye todos sus rásteres.",
         "multi_all": "Seleccionar todas",
         "multi_none": "Quitar selección",
         "multi_required": "Selecciona al menos una capa para el modo múltiple.",
@@ -169,6 +174,9 @@ TEXT = {
         "band": "Band:",
         "multi_mode": "Apply to multiple layers",
         "multi_select": "Select layers...",
+        "multi_alpha": "Alphabetical",
+        "multi_layer_manager": "Layer Manager",
+        "multi_help": "Drag, or use Ctrl/Shift, to select several. In Layer Manager, selecting a group includes all of its rasters.",
         "multi_all": "Select all",
         "multi_none": "Clear selection",
         "multi_required": "Select at least one layer for multiple mode.",
@@ -468,13 +476,72 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
     if not counts or sum(counts) <= 0:
         raise ValueError(tr("histogram_failed"))
     task.setProgress(100)
+    sorted_samples = sorted(values)
+    middle = len(sorted_samples) // 2
+    median = (sorted_samples[middle] if len(sorted_samples) % 2 else
+              (sorted_samples[middle - 1] + sorted_samples[middle]) / 2)
     return {
         "layer_id": layer_id, "band": band,
         "data_minimum": data_minimum, "data_maximum": data_maximum,
         "minimum": minimum, "maximum": maximum, "mean": mean,
-        "stddev": stddev, "counts": counts,
+        "stddev": stddev, "counts": counts, "sample_count": len(values),
+        "median": median, "sorted_samples": sorted_samples,
         "nodata": provider.sourceNoDataValue(band) if provider.sourceHasNoDataValue(band) else None,
     }
+
+
+class HistogramView(QWidget):
+    """Render at the available size instead of stretching a fixed bitmap."""
+
+    def __init__(self):
+        super().__init__()
+        self.plot_data = None
+        self.sigma_range = None
+        self.hover = None
+        self.readout = None
+        self.setMouseTracking(True)
+        self.setMinimumSize(320, 220)
+
+    def paintEvent(self, event):
+        if self.plot_data is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        draw_histogram(painter, *self.plot_data, width=self.width(),
+                       height=self.height(), sigma_range=self.sigma_range)
+        if self.hover:
+            x, y = self.hover
+            painter.setPen(QColor("#475569"))
+            painter.drawLine(x, 52, x, self.height() - 58)
+            painter.drawLine(78, y, self.width() - 35, y)
+        painter.end()
+
+    def mouseMoveEvent(self, event):
+        if self.plot_data is None:
+            return
+        counts, _, minimum, maximum, language = self.plot_data
+        x, y = event.pos().x(), event.pos().y()
+        width, height = self.width() - 113, self.height() - 110
+        if not (78 <= x <= self.width() - 35 and 52 <= y <= self.height() - 58):
+            self.leaveEvent(event)
+            return
+        self.hover = (x, y)
+        value = minimum + (x - 78) / width * (maximum - minimum)
+        frequency = (self.height() - 58 - y) / height * max(counts)
+        index = min(len(counts) - 1, int((x - 78) / width * len(counts)))
+        step = (maximum - minimum) / len(counts)
+        label = "Intervalo / muestras" if language == "es" else "Bin / samples"
+        if self.readout:
+            self.readout.setText(f"X: {value:.8g} · Y: {frequency:.2f} · {label}: "
+                                 f"[{minimum + index * step:.6g}, "
+                                 f"{minimum + (index + 1) * step:.6g}] → {counts[index]:,}")
+        self.update()
+
+    def leaveEvent(self, event):
+        self.hover = None
+        if self.readout:
+            self.readout.setText("X: — · Y: —")
+        self.update()
 
 
 class ColourDialog(QDialog):
@@ -534,8 +601,24 @@ class ColourDialog(QDialog):
         self.multi_check.toggled.connect(self.toggle_multi_mode)
         self.multi_select_button.clicked.connect(self.show_multi_menu)
         self.multi_menu = QMenu(self)
+        self.multi_tabs = QTabWidget()
         self.multi_list = QListWidget()
-        self.multi_list.setMinimumSize(340, 240)
+        self.multi_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.multi_list.setMinimumSize(420, 280)
+        self.multi_tree = QTreeWidget()
+        self.multi_tree.setHeaderHidden(True)
+        self.multi_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.multi_tree.setMinimumSize(420, 280)
+        self.multi_tabs.addTab(self.multi_list, self.t("multi_alpha"))
+        self.multi_tabs.addTab(self.multi_tree, self.t("multi_layer_manager"))
+        self._multi_tab_index = 0
+        self._multi_selection_order = []
+        self._syncing_multi = False
+        self.multi_list.itemSelectionChanged.connect(self.multi_selection_changed)
+        self.multi_tree.itemSelectionChanged.connect(self.multi_selection_changed)
+        self.multi_tabs.currentChanged.connect(self.change_multi_selection_view)
+        self.multi_help_label = QLabel(self.t("multi_help"))
+        self.multi_help_label.setWordWrap(True)
         self.multi_all_button, self.multi_none_button = QPushButton(), QPushButton()
         self.multi_all_button.clicked.connect(lambda: self.set_all_multi_layers(Qt.Checked))
         self.multi_none_button.clicked.connect(lambda: self.set_all_multi_layers(Qt.Unchecked))
@@ -543,7 +626,8 @@ class ColourDialog(QDialog):
         multi_buttons.addWidget(self.multi_all_button)
         multi_buttons.addWidget(self.multi_none_button)
         multi_widget_layout = QVBoxLayout()
-        multi_widget_layout.addWidget(self.multi_list)
+        multi_widget_layout.addWidget(self.multi_tabs)
+        multi_widget_layout.addWidget(self.multi_help_label)
         multi_widget_layout.addLayout(multi_buttons)
         multi_widget = QWidget()
         multi_widget.setLayout(multi_widget_layout)
@@ -552,13 +636,14 @@ class ColourDialog(QDialog):
         self.multi_menu.addAction(multi_action)
         layer_row = QHBoxLayout()
         layer_row.addWidget(self.layer_combo, 1)
+        layer_row.addWidget(self.multi_select_button, 1)
+        self.multi_select_button.hide()
         layer_row.addWidget(self.refresh_button)
         data_form = QFormLayout()
         self.add_row(data_form, "raster_layer", layer_row)
         self.add_row(data_form, "band", self.band_spin)
         multi_row = QHBoxLayout()
         multi_row.addWidget(self.multi_check)
-        multi_row.addWidget(self.multi_select_button)
         data_form.addRow("", multi_row)
         self.data_group = QGroupBox()
         self.data_group.setLayout(data_form)
@@ -575,7 +660,6 @@ class ColourDialog(QDialog):
         self.palette_gallery.setIconSize(QSize(170, 18))
         self.palette_gallery.setGridSize(QSize(205, 44))
         self.palette_gallery.setMinimumHeight(145)
-        self.palette_gallery.setMaximumHeight(190)
         self.palette_gallery.setSpacing(3)
         self.palette_gallery.itemClicked.connect(self.choose_palette_from_gallery)
         self.active_palette_swatch = QLabel()
@@ -614,7 +698,7 @@ class ColourDialog(QDialog):
         self.ramp_preview.setFixedHeight(28)
         ramp_layout = QVBoxLayout()
         ramp_layout.addLayout(ramp_form)
-        ramp_layout.addWidget(self.palette_gallery)
+        ramp_layout.addWidget(self.palette_gallery, 1)
         ramp_layout.addWidget(self.ramp_preview)
         ramp_layout.addLayout(style_row)
         self.ramp_group = QGroupBox()
@@ -680,8 +764,7 @@ class ColourDialog(QDialog):
 
         left_column, right_column = QVBoxLayout(), QVBoxLayout()
         left_column.addWidget(self.data_group)
-        left_column.addWidget(self.ramp_group)
-        left_column.addStretch()
+        left_column.addWidget(self.ramp_group, 1)
         right_column.addWidget(self.method_group)
         right_column.addWidget(self.limits_group)
         right_column.addStretch()
@@ -716,15 +799,38 @@ class ColourDialog(QDialog):
         config_page_layout.addWidget(self.viewer_group, 1)
 
         self.stats_label = QLabel()
-        self.histogram_label = QLabel()
-        self.histogram_label.setMinimumHeight(150)
-        self.histogram_label.setAlignment(Qt.AlignCenter)
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.histogram_label = HistogramView()
+        self.sigma_overlay = QCheckBox("Media ± nσ" if self.language == "es" else "Mean ± nσ")
+        self.histogram_sigma = QDoubleSpinBox()
+        self.histogram_sigma.setRange(0.1, 10.0)
+        self.histogram_sigma.setSingleStep(0.1)
+        self.histogram_sigma.setValue(1.0)
+        self.sigma_summary = QLabel()
+        self.sigma_summary.setWordWrap(True)
+        self.histogram_cursor = QLabel("X: — · Y: —")
+        self.histogram_label.readout = self.histogram_cursor
+        self.sigma_overlay.toggled.connect(self.update_histogram_sigma)
+        self.histogram_sigma.valueChanged.connect(self.update_histogram_sigma)
         self.table = QTableWidget(0, 4)
         self.table.horizontalHeader().setStretchLastSection(True)
         preview_layout = QVBoxLayout()
         preview_layout.addWidget(self.stats_label)
-        preview_layout.addWidget(self.histogram_label)
-        preview_layout.addWidget(self.table, 1)
+        sigma_row = QHBoxLayout()
+        sigma_row.addWidget(self.sigma_overlay)
+        sigma_row.addWidget(self.histogram_sigma)
+        sigma_row.addWidget(self.sigma_summary, 1)
+        preview_layout.addLayout(sigma_row)
+        preview_layout.addWidget(self.histogram_cursor)
+        histogram_splitter = QSplitter(Qt.Vertical)
+        histogram_splitter.addWidget(self.histogram_label)
+        histogram_splitter.addWidget(self.table)
+        histogram_splitter.setChildrenCollapsible(False)
+        histogram_splitter.setStretchFactor(0, 3)
+        histogram_splitter.setStretchFactor(1, 2)
+        histogram_splitter.setSizes([360, 240])
+        preview_layout.addWidget(histogram_splitter, 1)
         preview_page = QWidget()
         preview_page.setLayout(preview_layout)
 
@@ -902,6 +1008,9 @@ class ColourDialog(QDialog):
         self.refresh_button.setText(self.t("refresh"))
         self.multi_check.setText(self.t("multi_mode"))
         self.multi_select_button.setText(self.t("multi_select"))
+        self.multi_tabs.setTabText(0, self.t("multi_alpha"))
+        self.multi_tabs.setTabText(1, self.t("multi_layer_manager"))
+        self.multi_help_label.setText(self.t("multi_help"))
         self.multi_all_button.setText(self.t("multi_all"))
         self.multi_none_button.setText(self.t("multi_none"))
         self.reverse_check.setText(self.t("reverse"))
@@ -916,7 +1025,10 @@ class ColourDialog(QDialog):
         self.read_button.setText(self.t("read_band"))
         self.tabs.setTabText(0, self.t("config_tab"))
         self.tabs.setTabText(1, self.t("preview_tab"))
-        self.stats_label.setText(self.t("stats_ready"))
+        if hasattr(self, "_histogram_calculated"):
+            self.show_preview(self._histogram_calculated, activate=False)
+        else:
+            self.stats_label.setText(self.t("stats_ready"))
         self.table.setHorizontalHeaderLabels([
             self.t("zone"), self.t("minimum_bin"), self.t("maximum_bin"), self.t("color")
         ])
@@ -966,18 +1078,19 @@ class ColourDialog(QDialog):
 
     def toggle_multi_mode(self, checked):
         self.multi_select_button.setEnabled(checked)
+        self.layer_combo.setVisible(not checked)
+        self.multi_select_button.setVisible(checked)
         if checked:
             self.refresh_multi_layers()
             if not self.selected_multi_layer_ids():
                 current_id = self.layer_combo.currentData()
-                for row in range(self.multi_list.count()):
-                    item = self.multi_list.item(row)
-                    if item.data(Qt.UserRole) == current_id:
-                        item.setCheckState(Qt.Checked)
-                        break
-            self.show_multi_menu()
+                self.set_multi_layer_selection({current_id} if current_id else set())
+            self.multi_selection_changed()
+            QTimer.singleShot(0, self.show_multi_menu)
         else:
             self.multi_menu.hide()
+            self.update_band()
+            self.queue_live_analysis()
 
     def show_multi_menu(self):
         if not self.multi_check.isChecked():
@@ -991,32 +1104,130 @@ class ColourDialog(QDialog):
     def refresh_multi_layers(self):
         if not hasattr(self, "multi_list"):
             return
-        checked = set(self.selected_multi_layer_ids())
+        selected = set(self.selected_multi_layer_ids())
+        self._syncing_multi = True
         self.multi_list.clear()
-        for layer in QgsProject.instance().mapLayers().values():
-            if layer.type() != QgsMapLayerType.RasterLayer:
-                continue
+        layers = [
+            layer for layer in QgsProject.instance().mapLayers().values()
+            if layer.type() == QgsMapLayerType.RasterLayer
+        ]
+        for layer in sorted(layers, key=lambda item: item.name().casefold()):
             item = QListWidgetItem(layer.name())
             item.setData(Qt.UserRole, layer.id())
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if layer.id() in checked else Qt.Unchecked)
             self.multi_list.addItem(item)
+        self.multi_tree.clear()
+        self.add_multi_layer_tree_items(
+            self.multi_tree.invisibleRootItem(),
+            QgsProject.instance().layerTreeRoot(),
+        )
+        self.set_multi_layer_selection(selected)
+        self._syncing_multi = False
+        self.multi_selection_changed()
+
+    def add_multi_layer_tree_items(self, parent_item, parent_node):
+        """Copy the QGIS Layer Manager hierarchy, keeping raster branches only."""
+        for node in parent_node.children():
+            if isinstance(node, QgsLayerTreeGroup):
+                item = QTreeWidgetItem(parent_item, [node.name()])
+                item.setData(0, Qt.UserRole, None)
+                self.add_multi_layer_tree_items(item, node)
+                if item.childCount() == 0:
+                    parent_item.removeChild(item)
+                    continue
+                item.setExpanded(node.isExpanded())
+            elif isinstance(node, QgsLayerTreeLayer):
+                layer = node.layer()
+                if layer is None or layer.type() != QgsMapLayerType.RasterLayer:
+                    continue
+                item = QTreeWidgetItem(parent_item, [layer.name()])
+                item.setData(0, Qt.UserRole, layer.id())
+
+    @staticmethod
+    def multi_tree_item_layer_ids(item):
+        layer_id = item.data(0, Qt.UserRole)
+        if layer_id:
+            return [layer_id]
+        layer_ids = []
+        for index in range(item.childCount()):
+            layer_ids.extend(ColourDialog.multi_tree_item_layer_ids(item.child(index)))
+        return layer_ids
+
+    def selected_multi_layer_ids_from_view(self, view_index):
+        if view_index == 0:
+            return [item.data(Qt.UserRole) for item in self.multi_list.selectedItems()]
+        layer_ids, seen = [], set()
+        for item in self.multi_tree.selectedItems():
+            for layer_id in self.multi_tree_item_layer_ids(item):
+                if layer_id not in seen:
+                    seen.add(layer_id)
+                    layer_ids.append(layer_id)
+        return layer_ids
 
     def selected_multi_layer_ids(self):
         if not hasattr(self, "multi_list"):
             return []
-        return [
-            self.multi_list.item(row).data(Qt.UserRole)
-            for row in range(self.multi_list.count())
-            if self.multi_list.item(row).checkState() == Qt.Checked
+        selected = self.selected_multi_layer_ids_from_view(self.multi_tabs.currentIndex())
+        order = getattr(self, "_multi_selection_order", [])
+        return [key for key in order if key in selected] + [
+            key for key in selected if key not in order
         ]
 
+    def multi_selection_changed(self):
+        if self._syncing_multi:
+            return
+        selected = self.selected_multi_layer_ids_from_view(self.multi_tabs.currentIndex())
+        self._multi_selection_order = [
+            key for key in self._multi_selection_order if key in selected
+        ] + [key for key in selected if key not in self._multi_selection_order]
+        if self.multi_check.isChecked():
+            self.multi_select_button.setText(
+                f"{self.t('multi_select')} ({len(selected)})"
+            )
+            self.update_band()
+            self.queue_live_analysis()
+
+    def set_multi_layer_selection(self, layer_ids, view_index=None):
+        was_syncing = self._syncing_multi
+        self._syncing_multi = True
+        layer_ids = set(layer_ids)
+        targets = (0, 1) if view_index is None else (view_index,)
+        if 0 in targets:
+            for row in range(self.multi_list.count()):
+                item = self.multi_list.item(row)
+                item.setSelected(item.data(Qt.UserRole) in layer_ids)
+        if 1 in targets:
+            def select_tree_item(item):
+                layer_id = item.data(0, Qt.UserRole)
+                item.setSelected(bool(layer_id and layer_id in layer_ids))
+                for index in range(item.childCount()):
+                    select_tree_item(item.child(index))
+            root = self.multi_tree.invisibleRootItem()
+            for index in range(root.childCount()):
+                select_tree_item(root.child(index))
+        self._syncing_multi = was_syncing
+        self.multi_selection_changed()
+
+    def change_multi_selection_view(self, view_index):
+        if not hasattr(self, "_multi_tab_index"):
+            self._multi_tab_index = view_index
+            return
+        layer_ids = self.selected_multi_layer_ids_from_view(self._multi_tab_index)
+        self.set_multi_layer_selection(layer_ids, view_index)
+        self._multi_tab_index = view_index
+
     def set_all_multi_layers(self, state):
-        for row in range(self.multi_list.count()):
-            self.multi_list.item(row).setCheckState(state)
+        view = self.multi_list if self.multi_tabs.currentIndex() == 0 else self.multi_tree
+        if state == Qt.Checked:
+            view.selectAll()
+        else:
+            view.clearSelection()
 
     def current_layer(self):
-        layer = QgsProject.instance().mapLayer(self.layer_combo.currentData())
+        layer_id = self.layer_combo.currentData()
+        if self.multi_check.isChecked():
+            selected = self.selected_multi_layer_ids()
+            layer_id = selected[0] if selected else None
+        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
         return layer if isinstance(layer, QgsRasterLayer) else None
 
     def update_band(self):
@@ -1320,7 +1531,8 @@ class ColourDialog(QDialog):
     def preview(self):
         self.start_calculation("preview")
 
-    def show_preview(self, calculated):
+    def show_preview(self, calculated, activate=True):
+        self._histogram_calculated = calculated
         result, values, colours, edges = calculated
         minimum, maximum, counts = result["minimum"], result["maximum"], result["counts"]
         stats_text = self.t("stats").format(
@@ -1328,19 +1540,63 @@ class ColourDialog(QDialog):
         )
         if result.get("nodata") is not None:
             stats_text += self.t("stats_nodata").format(nodata=result["nodata"])
+        layer = QgsProject.instance().mapLayer(result["layer_id"])
+        es = self.language == "es"
+        name = layer.name() if layer else result["layer_id"]
+        stats_text = (f"{name} · {'Banda' if es else 'Band'} {result['band']}\n"
+                      + stats_text + "\n"
+                      + ("Muestras válidas" if es else "Valid samples")
+                      + f": {result.get('sample_count', sum(counts)):,} · "
+                      + ("En rango" if es else "In range") + f": {sum(counts):,} · "
+                      + ("Rango original" if es else "Original range")
+                      + f": {result['data_minimum']:.8g} – {result['data_maximum']:.8g}")
         self.stats_label.setText(stats_text)
-        self.histogram_label.setPixmap(histogram_pixmap(counts, values, minimum, maximum))
+        peaks = [i for i, count in enumerate(counts) if count == max(counts)]
+        mode = minimum + (peaks[0] + 0.5) * (maximum - minimum) / len(counts)
+        median_text = f"{result['median']:.8g}" if 'median' in result else "—"
+        extra = (f" · {'Mediana' if es else 'Median'}: {median_text} · "
+                 + ("Moda ≈ (histograma en rango)" if es else "Mode ≈ (in-range histogram)")
+                 + f": {mode:.8g}")
+        if len(peaks) > 1:
+            extra += f" ({len(peaks)} " + ("intervalos empatados" if es else "tied bins") + ")"
+        self.stats_label.setText(stats_text + extra)
+        self.histogram_label.plot_data = (counts, values, minimum, maximum, self.language)
+        self.update_histogram_sigma()
+        self.histogram_label.update()
         self.table.setRowCount(len(values))
         for row, (value, colour) in enumerate(zip(values, colours)):
             self.table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-            lower = edges[row] if row < len(edges) else minimum
-            self.table.setItem(row, 1, QTableWidgetItem(f"{lower:.10g}" if row > 0 else ""))
+            lower = minimum if row == 0 else values[row - 1]
+            self.table.setItem(row, 1, QTableWidgetItem(f"{lower:.10g}"))
             self.table.setItem(row, 2, QTableWidgetItem(f"{value:.10g}"))
             item = QTableWidgetItem(colour.name())
             item.setBackground(colour)
+            luminance = 0.2126 * colour.red() + 0.7152 * colour.green() + 0.0722 * colour.blue()
+            item.setForeground(QColor("white" if luminance < 140 else "black"))
             self.table.setItem(row, 3, item)
-        self.tabs.setCurrentIndex(1)
+        if activate:
+            self.tabs.setCurrentIndex(1)
         self.save_settings()
+
+    def update_histogram_sigma(self, *unused):
+        self.histogram_label.sigma_range = None
+        es = self.language == "es"
+        self.sigma_overlay.setText("Media ± nσ" if es else "Mean ± nσ")
+        self.sigma_summary.clear()
+        if self.sigma_overlay.isChecked() and hasattr(self, "_histogram_calculated"):
+            result = self._histogram_calculated[0]
+            spread = self.histogram_sigma.value() * result['stddev']
+            low, high = result['mean'] - spread, result['mean'] + spread
+            samples = result.get('sorted_samples', [])
+            inside = bisect.bisect_right(samples, high) - bisect.bisect_left(samples, low)
+            self.histogram_label.sigma_range = (low, high, result['mean'])
+            if samples:
+                self.sigma_summary.setText(
+                    f"[{low:.6g}, {high:.6g}] · {inside:,}/{len(samples):,} "
+                    f"({inside / len(samples):.1%}) · "
+                    + ("de todas las muestras válidas; no modifica la rampa" if es else
+                       "of all valid samples; does not change the ramp"))
+        self.histogram_label.update()
 
     def apply(self):
         if self.multi_check.isChecked():
@@ -1381,10 +1637,19 @@ class ColourDialog(QDialog):
         result, values, colours, _ = calculated
         minimum, maximum = result["minimum"], result["maximum"]
         items = [QgsColorRampShader.ColorRampItem(v, c, f"{v:.8g}") for v, c in zip(values, colours)]
+        discrete = self.render_combo.currentData() == "discrete"
+        if discrete and items:
+            # Discrete entries are upper bounds. Extend the final zone so
+            # percentile/manual limits saturate outliers instead of hiding them.
+            # The first zone already includes all values below its upper bound.
+            items[-1] = QgsColorRampShader.ColorRampItem(
+                float("inf"), colours[-1], f"{maximum:.8g}"
+            )
         ramp = QgsColorRampShader()
+        ramp.setClip(False)
         ramp.setColorRampType(
             QgsColorRampShader.Discrete
-            if self.render_combo.currentData() == "discrete"
+            if discrete
             else QgsColorRampShader.Interpolated
         )
         ramp.setColorRampItemList(items)
@@ -1508,23 +1773,62 @@ def interpolate_colour(stops, position):
     return QColor(stops[-1][1])
 
 
-def histogram_pixmap(counts, values, minimum, maximum):
-    pixmap = QPixmap(640, 150)
-    pixmap.fill(QColor("white"))
-    painter = QPainter(pixmap)
-    peak = max(counts) if counts else 1
-    width = pixmap.width() / max(1, len(counts))
+def draw_histogram(painter, counts, values, minimum, maximum, language="es",
+                   width=640, height=300, sigma_range=None):
+    painter.fillRect(0, 0, width, height, QColor("white"))
+    left, top, right, bottom = 78, 52, width - 35, height - 58
+    plot_width, plot_height = max(1, right - left), max(1, bottom - top)
+    peak = max(1, max(counts, default=0))
+    es = language == "es"
+    painter.setPen(QColor("#334155"))
+    painter.drawText(left, 18, "Frecuencia (muestras)" if es else "Frequency (samples)")
+    painter.fillRect(left, 29, 14, 10, QColor("#718096"))
+    painter.drawText(left + 20, 39, "Histograma" if es else "Histogram")
+    painter.setPen(QColor("#e53e3e"))
+    painter.drawLine(left + 135, 29, left + 135, 41)
+    painter.setPen(QColor("#334155"))
+    painter.drawText(left + 144, 39, "Cortes de rampa" if es else "Ramp breaks")
+    for tick in range(5):
+        y = bottom - round(tick / 4 * plot_height)
+        painter.setPen(QColor("#e2e8f0"))
+        painter.drawLine(left, y, right, y)
+        painter.setPen(QColor("#334155"))
+        painter.drawText(2, y - 9, left - 10, 18, Qt.AlignRight | Qt.AlignVCenter,
+                         f"{peak * tick / 4:,.0f}")
+    bin_width = plot_width / max(1, len(counts))
     painter.setPen(Qt.NoPen)
     painter.setBrush(QColor("#718096"))
     for i, count in enumerate(counts):
-        height = count / peak * 145
-        painter.drawRect(round(i * width), round(148 - height), max(1, math.ceil(width)), round(height))
-    painter.setPen(QColor("#e53e3e"))
+        bar_height = count / peak * plot_height
+        painter.drawRect(left + round(i * bin_width), bottom - round(bar_height),
+                         max(1, math.ceil(bin_width)), round(bar_height))
+    if sigma_range:
+        low, high, mean = sigma_range
+        x1 = left + round((max(minimum, min(maximum, low)) - minimum) / (maximum - minimum) * plot_width)
+        x2 = left + round((max(minimum, min(maximum, high)) - minimum) / (maximum - minimum) * plot_width)
+        painter.fillRect(x1, top, max(0, x2 - x1), plot_height, QColor(34, 197, 94, 65))
+        painter.setPen(QColor("#15803d"))
+        for marker in (low, mean, high):
+            if minimum <= marker <= maximum:
+                mx = left + round((marker - minimum) / (maximum - minimum) * plot_width)
+                painter.drawLine(mx, top, mx, bottom)
+    painter.setPen(QColor(229, 62, 62, 110))
     for value in values:
-        x = round((value - minimum) / (maximum - minimum) * 639)
-        painter.drawLine(x, 0, x, 149)
-    painter.end()
-    return pixmap
+        if minimum <= value <= maximum:
+            x = left + round((value - minimum) / (maximum - minimum) * plot_width)
+            painter.drawLine(x, top, x, bottom)
+    painter.setPen(QColor("#334155"))
+    painter.drawLine(left, top, left, bottom)
+    painter.drawLine(left, bottom, right, bottom)
+    ticks = max(2, min(6, plot_width // 110))
+    for tick in range(ticks + 1):
+        x = left + round(tick / ticks * plot_width)
+        value = minimum + tick / ticks * (maximum - minimum)
+        painter.drawLine(x, bottom, x, bottom + 5)
+        painter.drawText(x - 48, bottom + 8, 96, 20, Qt.AlignCenter, f"{value:.5g}")
+    painter.drawText(left, height - 24, plot_width, 20, Qt.AlignCenter,
+                     "Valor del ráster (unidades de la banda)" if es
+                     else "Raster value (band units)")
 
 
 def read_palette(path, translate=None):

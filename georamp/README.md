@@ -15,7 +15,8 @@ Plugin para QGIS 3.34 o superior que aplica rampas RGB y distribuciones estadís
 - Veintisiete rampas integradas, incluidas rampas geofísicas, científicas, divergentes, topográficas y batimétricas.
 - Buscador y categorías para navegar el catálogo de rampas.
 - Galería permanente y filtrable con muestras visuales de todas las rampas e indicador de la activa.
-- Modo multicapa para aplicar una configuración a varios rásteres seleccionados.
+- Modo multicapa con vista alfabética y selección por arrastre, Ctrl o Shift.
+- Vista del Administrador de capas que conserva la jerarquía de QGIS y permite seleccionar grupos completos.
 - Recorte configurable por percentiles para controlar valores extremos.
 - Procesamiento en segundo plano con progreso y cancelación; NoData se excluye de estadísticas e histogramas.
 - Persistencia de la última tabla RGB importada e intercambio de estilos QGIS QML.
@@ -35,13 +36,13 @@ Se aceptan filas R,G,B o posición,R,G,B, separadas por comas, punto y coma o es
 ## Uso
 
 1. Carga un ráster y abre Ráster → GeoRamp.
-2. Elige idioma, capa, banda, rampa, distribución y número de intervalos.
+2. Elige idioma, capa, banda, rampa, distribución y número de intervalos. En modo multicapa, usa la vista alfabética o la jerarquía del Administrador de capas.
 3. Pulsa Previsualizar para revisar histograma y cortes.
 4. Pulsa Aplicar.
 
 ## Instalación
 
-Instala georamp.zip desde Complementos → Administrar e instalar complementos → Instalar a partir de ZIP.
+Instala `georamp-1.0.0.zip` desde Complementos → Administrar e instalar complementos → Instalar a partir de ZIP. Requiere QGIS 3.34 o superior.
 
 ## Alcance
 
