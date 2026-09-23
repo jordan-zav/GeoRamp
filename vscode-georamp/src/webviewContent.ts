@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
 import { rasterPixelToModel, previewToReference } from './geo';
+import { parseQml, exportQml, histogramSummary } from './styleExchange';
 import { LayerTree } from './layerTree';
 import { BUILTIN_PALETTES, normalizePaletteStops } from './palettes';
 
@@ -334,7 +335,7 @@ export function getWebviewContent(
     }
 
     .histogram-card {
-      height: 160px;
+      height: auto;
       margin-bottom: 12px;
       border: 1px solid var(--border-color);
       border-radius: 4px;
@@ -343,11 +344,12 @@ export function getWebviewContent(
       position: relative;
     }
     canvas#histogramCanvas {
+      display: block;
       width: 100%;
-      height: 100%;
+      height: clamp(140px, 23vh, 260px);
     }
     .import-manager { width: 235px; flex: 0 0 235px; padding: 14px 10px;
-      display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+      display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
       background: var(--sidebar-bg); border-right: 1px solid var(--border-color); }
     .source-list { flex: 1; overflow-y: auto; min-height: 80px; }
     .source-row { display: flex; flex-wrap: wrap; margin-bottom: 6px; border: 1px solid var(--border-color); border-radius: 5px; }
@@ -376,6 +378,10 @@ export function getWebviewContent(
     .layer-options input[type=range] { width:65px; min-width:30px; flex:1; }
     .layer-status { width:100%; padding:0 8px 5px; font-size:10px; color:var(--vscode-descriptionForeground,#bbb); }
     .layer-visible { margin:8px 3px 8px 6px; }
+    .batch-selected { outline: 1px solid var(--vscode-focusBorder, #3794ff); }
+    #batchList { max-height:200px; overflow:auto; }
+    #batchList button { display:block; width:100%; text-align:left; margin:2px 0; }
+    #histogramSummary, #histogramCursor, #sigmaSummary, #styleStatus { white-space:pre-wrap; overflow-wrap:anywhere; }
     .group-row { background:var(--vscode-sideBarSectionHeader-background,#ffffff0a); }
     .import-manager { width:270px; flex-basis:270px; }
   </style>
@@ -409,6 +415,14 @@ export function getWebviewContent(
       <div class="form-row"><input id="groupName" type="text" placeholder="Nombre del grupo" aria-label="Nombre del grupo" /><button class="btn btn-secondary" id="btnAddGroup">+ Grupo</button></div>
       <div class="manager-hint">Arrastra para agrupar y ordenar. Arriba = delante. Detalle en la capa seleccionada.</div>
       <input id="sourceSearch" type="text" aria-label="Buscar raster" placeholder="Buscar raster..." />
+      <details><summary data-i18n="batch_style">Aplicar estilo a varias capas</summary>
+        <select id="batchView"><option value="alpha" data-i18n="alphabetical">Alfabética</option><option value="tree" data-i18n="hierarchy">Jerarquía</option></select>
+        <div class="form-row"><button id="batchAll" class="btn btn-secondary" data-i18n="select_all">Todas</button><button id="batchNone" class="btn btn-secondary" data-i18n="select_none">Ninguna</button></div>
+        <div class="manager-hint" data-i18n="batch_hint">Arrastra, Ctrl o Shift para seleccionar. Los grupos incluyen sus rásteres.</div>
+        <div id="batchList" role="listbox" aria-multiselectable="true"></div>
+        <div class="form-row"><button id="batchApply" class="btn" data-i18n="apply_selected">Aplicar a selección</button><button id="batchCancel" class="btn btn-secondary" data-i18n="cancel" disabled>Cancelar</button></div>
+        <div id="batchStatus" class="manager-hint" role="status"></div>
+      </details>
       <div id="sourceCount" class="manager-hint"></div>
       <div id="sourceList" class="source-list" aria-label="Rasters importados"></div>
       <p class="manager-hint" data-i18n="import_hint">Selecciona para editar. Marca para mostrar. Quitar no elimina el archivo.</p>
@@ -438,7 +452,12 @@ export function getWebviewContent(
       <div class="tab-content" id="breaksTab">
         <div class="breaks-container">
           <div class="histogram-card">
+            <div class="form-row"><label><input type="checkbox" id="histogramMarkers" checked /><span data-i18n="stat_markers">Media / mediana / moda</span></label></div>
+            <div class="form-row"><label><input type="checkbox" id="histogramSigmaOverlay" checked /><span data-i18n="sigma_overlay">Media ± nσ</span></label><input id="histogramSigma" aria-label="Histogram sigma" type="number" min="0" max="10" step="0.1" value="2" style="width:65px" /></div>
             <canvas id="histogramCanvas"></canvas>
+            <div id="histogramCursor" class="manager-hint"></div>
+            <div id="histogramSummary" class="manager-hint"></div>
+            <div id="sigmaSummary" class="manager-hint"></div>
           </div>
           <table class="breaks-table">
             <thead>
@@ -502,6 +521,12 @@ export function getWebviewContent(
         </div>
       </div>
 
+      <div class="section-card">
+        <div class="form-row"><button id="importQml" class="btn btn-secondary">Importar QML</button><button id="exportQml" class="btn btn-secondary">Exportar QML</button></div>
+        <input id="qmlFileInput" type="file" accept=".qml" hidden />
+        <label><input id="compactLegend" type="checkbox" checked /><span data-i18n="compact_legend">Leyenda compacta QGIS</span></label>
+        <div id="styleStatus" class="manager-hint" role="status"></div>
+      </div>
       <!-- 3. DISTRIBUCIÓN -->
       <div class="section-card">
         <div class="section-title"><span data-i18n="sec_method">3. Distribución</span></div>
@@ -583,6 +608,9 @@ export function getWebviewContent(
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const projection = GeoRampProjection;
+    const parseQml = ${parseQml.toString()};
+    const exportQml = ${exportQml.toString()};
+    const histogramSummary = ${histogramSummary.toString()};
     const BUILTIN_PALETTES = ${palettesJson};
     const normalizePaletteStops = ${normalizePaletteStopsSource};
     const rasterPixelToModel = ${rasterPixelToModelSource};
@@ -592,6 +620,18 @@ export function getWebviewContent(
     // Dictionary
     const I18N = {
       es: {
+        batch_style: "Aplicar estilo a varias capas",
+        alphabetical: "Alfabética",
+        hierarchy: "Jerarquía",
+        select_all: "Todas",
+        select_none: "Ninguna",
+        batch_hint: "Arrastra, Ctrl o Shift para seleccionar. Los grupos incluyen sus rásteres.",
+        apply_selected: "Aplicar a selección",
+        cancel: "Cancelar",
+        stat_markers: "Media / mediana / moda",
+        sigma_overlay: "Media ± nσ",
+        compact_legend: "Leyenda compacta QGIS",
+
         title: "GeoRamp — Visor rápido de rasters",
         export_png: "Exportar PNG",
         imports: "Capas", add_rasters: "+ Importar rasters",
@@ -650,6 +690,18 @@ export function getWebviewContent(
         imported_ramp: "Rampa importada",
       },
       en: {
+        batch_style: "Apply style to multiple layers",
+        alphabetical: "Alphabetical",
+        hierarchy: "Hierarchy",
+        select_all: "All",
+        select_none: "None",
+        batch_hint: "Drag, Ctrl or Shift to select. Groups include their rasters.",
+        apply_selected: "Apply to selection",
+        cancel: "Cancel",
+        stat_markers: "Mean / median / mode",
+        sigma_overlay: "Mean ± nσ",
+        compact_legend: "Compact QGIS legend",
+
         title: "GeoRamp — GeoTIFF & Raster Viewer",
         export_png: "Export PNG",
         imports: "Layers", add_rasters: "+ Import rasters",
@@ -709,7 +761,9 @@ export function getWebviewContent(
       }
     };
 
-    let currentLang = "es";
+    const savedProject=vscode.getState?.() || {};
+    let currentLang = savedProject.language === "en" ? "en" : "es";
+    let importedShader = null, lastRenderedStyle = null;
     let rasterInfo = null;
     let selectedPalette = BUILTIN_PALETTES[0];
     let isReversed = false;
@@ -822,16 +876,25 @@ export function getWebviewContent(
       renderComposition();
     }
     const styleInputs = ["distSelect","numBinsInput","sigmaInput","chkShiftLog","renderModeSelect",
-      "chkManualLimits","manualMinInput","manualMaxInput","chkPercentiles","pctLowInput","pctHighInput","chkReverse"];
+      "chkManualLimits","manualMinInput","manualMaxInput","chkPercentiles","pctLowInput","pctHighInput","chkReverse","compactLegend"];
     function captureStyle() {
-      return {palette:selectedPalette, reversed:isReversed, inputs:styleInputs.map(id => {
+      return {qml:importedShader, palette:selectedPalette, reversed:isReversed, inputs:styleInputs.map(id => {
         const input = document.getElementById(id); return {id, value:input.value, checked:input.checked};
       })};
     }
-    const defaultStyle = captureStyle(), sourceStyles = new Map();
+    let defaultStyle = savedProject.defaultStyle || captureStyle();
+    const sourceStyles = new Map(Object.entries(savedProject.sourceStyles || {}));
     function restoreStyle(id, band) {
       const style = sourceStyles.get(id + ":" + band) || defaultStyle;
+      applyStyleControls(style);
+    }
+    function applyStyleControls(style) {
+      importedShader = style.qml || null;
       selectedPalette = style.palette; isReversed = style.reversed;
+      if(selectedPalette.category==="custom"){
+        const index=BUILTIN_PALETTES.findIndex(item=>item.category==="custom");if(index>=0)BUILTIN_PALETTES.splice(index,1);
+        BUILTIN_PALETTES.push(selectedPalette);
+      }
       for (const saved of style.inputs) {
         const input = document.getElementById(saved.id); input.value = saved.value;
         if (saved.checked !== undefined) input.checked = saved.checked;
@@ -842,11 +905,11 @@ export function getWebviewContent(
       document.getElementById("logShiftRow").style.display = distSelect.value === "log_linear" ? "flex" : "none";
     }
     let sourceEntries = [], activeSourceId = "";
-    const savedProject=vscode.getState?.() || {};
     let projectCrs=savedProject.projectCrs || null, viewInitialized=false;
+    const sourceBands=new Map(Object.entries(savedProject.sourceBands || {}));
     const sourceAssignments=new Map(Object.entries(savedProject.sourceAssignments || {}));
     function camera(){return {zoom,panX,panY};}
-    function persistProject(){vscode.setState?.({...savedProject,projectCrs,sourceAssignments:Object.fromEntries(sourceAssignments)});}
+    function persistProject(){vscode.setState?.({...savedProject,projectCrs,sourceAssignments:Object.fromEntries(sourceAssignments),language:currentLang,defaultStyle,customPalette:BUILTIN_PALETTES.find(p=>p.category==="custom"),sourceStyles:Object.fromEntries(sourceStyles),sourceBands:Object.fromEntries(sourceBands)});}
     function prepareGeo(info){
       if(sourceAssignments.has(info.sourceId))info.geo={...info.geo,assignedCrs:sourceAssignments.get(info.sourceId)};
       return info;
@@ -914,7 +977,7 @@ export function getWebviewContent(
     function loadNextLayer() {
       if (pendingLayer) return;
       const next = tree.layers().find(layer => layer.visible && !layerViews.has(layer.id) && !layerErrors.has(layer.id));
-      if (next) { pendingLayer = next.id; vscode.postMessage({type:"layerPreview",id:next.id}); }
+      if (next) { pendingLayer = next.id; vscode.postMessage({type:"layerPreview",id:next.id,band:sourceBands.get(next.id)||0}); }
     }
     function saveLayerView(info, canvas) {
       prepareGeo(info);
@@ -993,7 +1056,7 @@ export function getWebviewContent(
             open.addEventListener("keydown",event=>{if(event.key==="F2"){event.preventDefault();rename();}});
           }
           open.addEventListener("click",()=>{if(node.kind==="group"){node.expanded=!node.expanded;renderSources();}
-            else vscode.postMessage({type:"selectSource",id:node.id});});
+            else vscode.postMessage({type:"selectSource",id:node.id,band:sourceBands.get(node.id)||0});});
           const remove=document.createElement("button");remove.className="btn btn-secondary source-remove";remove.textContent="\u00d7";
           remove.title="Quitar "+node.name;remove.setAttribute("aria-label",remove.title);
           remove.addEventListener("click",()=>{if(node.kind==="group"){tree.remove(node.id);renderSources();renderComposition();}
@@ -1023,6 +1086,7 @@ export function getWebviewContent(
           if(node.kind==="group" && (node.expanded || query))draw(node.id,depth+1);
         }
       };draw(null,0);
+      renderBatchList();
     }
     document.getElementById("btnAddGroup").addEventListener("click",()=>{
       const input=document.getElementById("groupName");tree.add("group:"+(++groupSequence),input.value.trim() || "Grupo "+groupSequence,"group");input.value="";renderSources();
@@ -1034,6 +1098,8 @@ export function getWebviewContent(
     function clearRaster() {
       if (rasterInfo) sourceStyles.set(rasterInfo.sourceId + ":" + rasterInfo.activeBand, captureStyle());
       clearTimeout(detailTimer); clearTimeout(probeTimer); detailId++; probeId++;
+      lastRenderedStyle = null; histogramPlot = null;
+      for (const id of ["histogramSummary","histogramCursor","sigmaSummary"]) document.getElementById(id).textContent="";
       detail = null; rasterInfo = null; detailCanvas.hidden = true;
       ctx.clearRect(0,0,rasterCanvas.width,rasterCanvas.height);
       bandSelect.replaceChildren(); bandSelect.disabled = true;
@@ -1047,16 +1113,32 @@ export function getWebviewContent(
     // Init messaging
     window.addEventListener("message", (event) => {
       const message = event.data;
-      if (message.type === "sources") {
+      if (message.type === "preferences") {
+        if (!savedProject.defaultStyle && message.preferences?.style) defaultStyle=message.preferences.style;
+        if (!savedProject.language && message.preferences?.language) currentLang=message.preferences.language === "en" ? "en" : "es";
+        const custom=savedProject.customPalette || message.preferences?.customPalette;
+        if(custom && !BUILTIN_PALETTES.some(p=>p.category==="custom"))BUILTIN_PALETTES.push(custom);
+        langSelect.value=currentLang; updateLanguage();
+      } else if (message.type === "batchPreview" || message.type === "batchError") {
+        if (batchPending && message.request === batchPending.request) {
+          const pending=batchPending;batchPending=null;
+          if(message.type === "batchError")pending.reject(new Error(message.message));else pending.resolve(message.data);
+        }
+      } else if (message.type === "styleSaved" || message.type === "styleError") {
+        document.getElementById("styleStatus").textContent=message.message;
+      } else if (message.type === "sources") {
         sourceEntries = message.sources; activeSourceId = message.activeId; syncLayers(); renderSources(); renderComposition();
       } else if (message.type === "layerPreview") {
         if (pendingLayer === message.id) pendingLayer=null;
         if (tree.nodes.some(node=>node.id===message.id) && !layerViews.has(message.id) && message.id !== rasterInfo?.sourceId) {
-          const info=message.data,data=new Float64Array(info.previewDataBuffer),canvas=document.createElement("canvas");
-          const values=Array.from({length:39},(_,index)=>info.stats.minimum+(info.stats.maximum-info.stats.minimum)*index/38);
-          const colours=Array.from({length:39},(_,index)=>interpolateColorHex(BUILTIN_PALETTES[0].stops,index/38));
-          drawRasterCanvas(info.previewWidth,info.previewHeight,data,values,colours,"continuous",canvas);
-          saveLayerView(info,canvas);
+          const info=message.data,canvas=document.createElement("canvas");
+          info.previewData=new Float64Array(info.previewDataBuffer);info.sampleData=new Float64Array(info.sampleDataBuffer || info.previewDataBuffer);
+          try{
+            const style=sourceStyles.get(info.sourceId+":"+info.activeBand)||defaultStyle;
+            const result=computeStyle(info,style);
+            drawRasterCanvas(info.previewWidth,info.previewHeight,info.previewData,result.values,result.colours,result.renderMode,canvas);
+            saveLayerView(info,canvas);
+          }catch(error){layerErrors.set(info.sourceId,error.message);}
         }
         loadNextLayer();renderSources();renderComposition();
       } else if (message.type === "layerError") {
@@ -1078,6 +1160,7 @@ export function getWebviewContent(
         if (message.kind === "probe" && message.id === probeId) document.getElementById("valOverlay").textContent = message.message;
       } else if (message.type === "init") {
         rasterInfo = prepareGeo(message.data);
+        sourceBands.set(rasterInfo.sourceId,rasterInfo.activeBand);
         if(!projectCrs && (rasterInfo.geo?.assignedCrs || rasterInfo.geo?.epsg)){
           try{projectCrs=projection.describe(rasterInfo.geo.assignedCrs || rasterInfo.geo.epsg).id;viewInitialized=false;persistProject();}catch{}
         }
@@ -1113,7 +1196,7 @@ export function getWebviewContent(
       currentLang = e.target.value;
       renderSources();
       document.getElementById("sourceSearch").placeholder = currentLang === "es" ? "Buscar raster..." : "Search rasters...";
-      updateLanguage();
+      updateLanguage(); persistPreferences();
     });
 
     function updateLanguage() {
@@ -1125,6 +1208,10 @@ export function getWebviewContent(
       rampSearch.placeholder = currentLang === "en" ? "Search ramp..." : "Buscar rampa...";
       renderRampGrid();
       updateActiveRampBar();
+      document.getElementById("importQml").textContent=currentLang==="es" ? "Importar QML" : "Import QML";
+      document.getElementById("exportQml").textContent=currentLang==="es" ? "Exportar QML" : "Export QML";
+      document.documentElement.lang=currentLang;
+      redrawHistogram();
       if (rasterInfo) {
         initBandSelect();
         updateStatsUI();
@@ -1182,7 +1269,7 @@ export function getWebviewContent(
         const item = document.createElement("div");
         item.className = "ramp-item" + (p.id === selectedPalette.id ? " selected" : "");
         item.onclick = () => {
-          selectedPalette = p;
+          importedShader=null;selectedPalette = p;
           renderRampGrid();
           updateActiveRampBar();
           updateAndRender();
@@ -1223,7 +1310,7 @@ export function getWebviewContent(
     rampSearch.addEventListener("input", renderRampGrid);
     rampCategorySelect.addEventListener("change", renderRampGrid);
     chkReverse.addEventListener("change", (e) => {
-      isReversed = e.target.checked;
+      importedShader=null;isReversed = e.target.checked;
       updateActiveRampBar();
       renderRampGrid();
       updateAndRender();
@@ -1236,10 +1323,11 @@ export function getWebviewContent(
       if (!file) return;
       try {
         const palette = parseRgbTable(await file.text(), file.name);
+        numBinsInput.value=String(Math.min(255,Math.max(2,palette.stops.length)));
         const previous = BUILTIN_PALETTES.findIndex((item) => item.category === "custom");
         if (previous >= 0) BUILTIN_PALETTES.splice(previous, 1);
         BUILTIN_PALETTES.push(palette);
-        selectedPalette = palette;
+        importedShader=null;selectedPalette = palette;
         rampCategorySelect.value = "custom";
         rampSearch.value = "";
         renderRampGrid();
@@ -1290,7 +1378,7 @@ export function getWebviewContent(
 
     // Controls
     distSelect.addEventListener("change", (e) => {
-      const val = e.target.value;
+      importedShader=null;const val = e.target.value;
       document.getElementById("normalSigmaRow").style.display = val === "normal" ? "flex" : "none";
       document.getElementById("logShiftRow").style.display = val === "log_linear" ? "flex" : "none";
       updateAndRender();
@@ -1298,9 +1386,13 @@ export function getWebviewContent(
     numBinsInput.addEventListener("input", updateAndRender);
     sigmaInput.addEventListener("input", updateAndRender);
     chkShiftLog.addEventListener("change", updateAndRender);
-    renderModeSelect.addEventListener("change", updateAndRender);
+    renderModeSelect.addEventListener("change", event=>{
+      if(renderModeSelect.value==="discrete")document.getElementById("compactLegend").checked=false;
+      updateAndRender(event);
+    });
 
     chkManualLimits.addEventListener("change", (e) => {
+      importedShader=null;
       if (e.target.checked) {
         chkPercentiles.checked = false;
         pctLowInput.disabled = true;
@@ -1314,6 +1406,7 @@ export function getWebviewContent(
     manualMaxInput.addEventListener("input", updateAndRender);
 
     chkPercentiles.addEventListener("change", (e) => {
+      importedShader=null;
       if (e.target.checked) {
         chkManualLimits.checked = false;
         manualMinInput.disabled = true;
@@ -1422,18 +1515,20 @@ export function getWebviewContent(
     }
 
     // Matches plugin.py calculate_breaks
-    function calculateBreaksQgis(rasterData, stats, min, max) {
-      const bins = Math.min(255, Math.max(2, parseInt(numBinsInput.value) || 39));
-      const method = distSelect.value;
-      const requestedSigma = Number(sigmaInput.value);
+    function calculateBreaksQgis(rasterData, stats, min, max, style = captureStyle()) {
+      const settings=Object.fromEntries(style.inputs.map(input=>[input.id,input]));
+      const bins = Math.min(255, Math.max(2, parseInt(settings.numBinsInput.value) || 39));
+      const method = settings.distSelect.value;
+      const requestedSigma = Number(settings.sigmaInput.value);
       const sigma = Number.isFinite(requestedSigma)
         ? Math.min(6, Math.max(0.5, requestedSigma))
         : 2;
-      const shiftLog = chkShiftLog.checked;
-      const renderMode = renderModeSelect.value;
+      const shiftLog = settings.chkShiftLog.checked;
+      const renderMode = settings.renderModeSelect.value;
 
       // Compute 256-bin histogram over the target [min, max] range
       const counts = computeHistogramCountsInRange(rasterData, min, max);
+      if(!counts.some(count=>count>0))throw new Error(currentLang==="es" ? "No hay muestras válidas dentro del rango." : "No valid samples inside the range.");
 
       let values, edges;
       if (method === "equal_area") {
@@ -1512,8 +1607,12 @@ export function getWebviewContent(
       }
     }
 
+    for (const id of styleInputs) {
+      for (const event of ["input","change"])document.getElementById(id).addEventListener(event,()=>importedShader=null,{capture:true});
+    }
     let renderFrame = 0;
-    function updateAndRender() {
+    function updateAndRender(event) {
+      if(event?.type)importedShader=null;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       renderFrame = requestAnimationFrame(() => {
         renderFrame = 0;
@@ -1521,54 +1620,46 @@ export function getWebviewContent(
       });
     }
 
+    function computeStyle(info, style) {
+      const settings=Object.fromEntries(style.inputs.map(input=>[input.id,input]));
+      let min=info.stats.minimum, max=info.stats.maximum;
+      if (style.qml) {
+        const q=style.qml;
+        return {...q, min:q.minimum, max:q.maximum, bins:q.values.length, renderMode:q.mode,
+          edges:[q.minimum,...q.values], counts:computeHistogramCountsInRange(info.sampleData,q.minimum,q.maximum)};
+      }
+      if(settings.chkManualLimits.checked){min=Number(settings.manualMinInput.value);max=Number(settings.manualMaxInput.value);}
+      if(settings.chkPercentiles.checked){
+        const low=Number(settings.pctLowInput.value),high=Number(settings.pctHighInput.value);
+        if(!(0<=low && low<high && high<=100))throw new Error(currentLang === "es" ? "Percentiles no válidos" : "Invalid percentiles");
+        const range=computePercentileRangeQgis(info.stats.percentileCounts,info.stats.minimum,info.stats.maximum,low,high);
+        min=range.low;max=range.high;
+      }
+      if(!Number.isFinite(min)||!Number.isFinite(max)||max<min || (max===min && settings.chkManualLimits.checked))throw new Error(currentLang === "es" ? "Límites no válidos" : "Invalid limits");
+      if(max===min)max=min+Math.max(1e-6,Math.abs(min)*1e-6);
+      const result=calculateBreaksQgis(info.sampleData,info.stats,min,max,style);
+      const stops=normalizePaletteStops(style.palette.stops,style.reversed);
+      const colours=Array.from({length:result.bins},(_,i)=>interpolateColorHex(stops,i/(result.bins-1)));
+      return {...result,min,max,colours};
+    }
     function renderNow() {
       if (!rasterInfo) return;
-
-      const dataMin = rasterInfo.stats.minimum;
-      const dataMax = rasterInfo.stats.maximum;
-      let min = dataMin;
-      let max = dataMax;
-
-      let breakResult;
       try {
-        if (chkManualLimits.checked) {
-          const requestedMin = Number(manualMinInput.value);
-          const requestedMax = Number(manualMaxInput.value);
-          if (Number.isFinite(requestedMin)) min = requestedMin;
-          if (Number.isFinite(requestedMax)) max = requestedMax;
-        } else if (chkPercentiles.checked) {
-          const requestedLow = Number(pctLowInput.value);
-          const requestedHigh = Number(pctHighInput.value);
-          const lowP = Number.isFinite(requestedLow) ? requestedLow : 2;
-          const highP = Number.isFinite(requestedHigh) ? requestedHigh : 98;
-          if (!(0 <= lowP && lowP < highP && highP <= 100)) return;
-          const pctRange = computePercentileRangeQgis(
-            rasterInfo.stats.percentileCounts,
-            dataMin,
-            dataMax,
-            lowP,
-            highP
-          );
-          min = pctRange.low;
-          max = pctRange.high;
-        }
-        if (!(max > min)) {
-          max = min + Math.max(1e-6, Math.abs(min) * 1e-6);
-        }
-        breakResult = calculateBreaksQgis(rasterInfo.sampleData, rasterInfo.stats, min, max);
-      } catch (err) {
-        console.error(err);
-        return;
+        const result=computeStyle(rasterInfo,captureStyle());
+        const {min,max,colours}=result;
+        drawRasterCanvas(rasterInfo.previewWidth,rasterInfo.previewHeight,rasterInfo.previewData,result.values,colours,result.renderMode);
+        saveLayerView(rasterInfo,rasterCanvas);
+        shading={values:result.values,colours,mode:result.renderMode};
+        lastRenderedStyle={...shading,band:rasterInfo.activeBand,minimum:min,maximum:max};
+        drawDetail();renderComposition();renderSources();
+        drawHistogramAndBreaks(result,getActiveStops(),result.counts,min,max);
+        sourceStyles.set(rasterInfo.sourceId+":"+rasterInfo.activeBand,captureStyle());
+        document.getElementById("styleStatus").textContent=importedShader ? (currentLang==="es" ? "Cortes QML exactos. Editar controles recalcula el estilo." : "Exact QML stops. Editing controls recalculates the style.") : "";
+        persistPreferences();
+      } catch(error) {
+        lastRenderedStyle=null;
+        document.getElementById("styleStatus").textContent=String(error.message || error);
       }
-
-      const stops = getActiveStops();
-      const bins = breakResult.bins;
-      const colours = Array.from({ length: bins }, (_, i) => interpolateColorHex(stops, i / Math.max(1, bins - 1)));
-
-      drawRasterCanvas(rasterInfo.previewWidth, rasterInfo.previewHeight, rasterInfo.previewData, breakResult.values, colours, breakResult.renderMode);
-      saveLayerView(rasterInfo,rasterCanvas);
-      shading = {values:breakResult.values, colours, mode:breakResult.renderMode}; drawDetail(); renderComposition(); renderSources();
-      drawHistogramAndBreaks(breakResult, stops, breakResult.counts, min, max);
     }
 
     function drawRasterCanvas(width, height, data, values, colours, renderMode, target = rasterCanvas) {
@@ -1615,13 +1706,14 @@ export function getWebviewContent(
       }
 
       const { values, edges, bins } = breakResult;
+      histogramPlot={breakResult,stops,counts,min,max};
 
       // Draw break lines
       values.forEach((brk, i) => {
         const pct = (brk - min) / (max - min || 1);
         const x = pct * histCanvas.width;
         const t = i / Math.max(1, bins - 1);
-        const [r, g, b] = interpolateColorHex(stops, t);
+        const [r, g, b] = (breakResult.colours?.[i] || interpolateColorHex(stops, t));
 
         hCtx.strokeStyle = \`rgb(\${r},\${g},\${b})\`;
         hCtx.lineWidth = 1.5;
@@ -1631,15 +1723,17 @@ export function getWebviewContent(
         hCtx.stroke();
       });
 
+      drawHistogramAnnotations(hCtx,counts,min,max);
+
       // Table Breakdown
       const tbody = document.getElementById("breaksTableBody");
       tbody.innerHTML = "";
       for (let i = 0; i < values.length; i++) {
         const tr = document.createElement("tr");
         const t = i / Math.max(1, bins - 1);
-        const [r, g, b] = interpolateColorHex(stops, t);
+        const [r, g, b] = breakResult.colours?.[i] || interpolateColorHex(stops, t);
         const hexStr = \`#\${r.toString(16).padStart(2,"0")}\${g.toString(16).padStart(2,"0")}\${b.toString(16).padStart(2,"0")}\`;
-        const lower = edges[i] !== undefined ? edges[i] : min;
+        const lower = i === 0 ? min : values[i-1];
         const upper = values[i];
 
         tr.innerHTML = \`
@@ -1651,6 +1745,166 @@ export function getWebviewContent(
         tbody.appendChild(tr);
       }
     }
+
+    let preferenceTimer;
+    function persistPreferences() {
+      persistProject();clearTimeout(preferenceTimer);
+      preferenceTimer=setTimeout(()=>vscode.postMessage({type:"savePreferences",preferences:{language:currentLang,style:captureStyle(),customPalette:BUILTIN_PALETTES.find(p=>p.category==="custom")}}),250);
+    }
+    document.getElementById("compactLegend").addEventListener("change",event=>{
+      if(event.target.checked && renderModeSelect.value!=="continuous"){
+        renderModeSelect.value="continuous";importedShader=null;updateAndRender();
+      }
+    });
+    document.getElementById("exportQml").addEventListener("click",()=>{
+      renderNow();if(!lastRenderedStyle || !rasterInfo)return;
+      vscode.postMessage({type:"saveQml",sourceId:rasterInfo.sourceId,
+        text:exportQml(lastRenderedStyle,document.getElementById("compactLegend").checked)});
+    });
+    document.getElementById("importQml").addEventListener("click",()=>document.getElementById("qmlFileInput").click());
+    document.getElementById("qmlFileInput").addEventListener("change",async event=>{
+      const file=event.target.files?.[0],info=rasterInfo;if(!file || !info)return;
+      try {
+        const qml=parseQml(await file.text(),DOMParser);
+        if(rasterInfo!==info)throw new Error("Raster changed");
+        if(qml.band>=info.bandCount)throw new Error(currentLang==="es" ? "La banda QML no existe en este ráster." : "The QML band does not exist in this raster.");
+        const style=captureStyle();style.qml=qml;
+        style.palette={id:"custom",nameEs:"QML: "+file.name,nameEn:"QML: "+file.name,category:"custom",
+          stops:qml.colours.map((rgb,i)=>({position:i/(qml.colours.length-1),color:"#"+rgb.map(v=>v.toString(16).padStart(2,"0")).join("")}))};
+        style.reversed=false;
+        const settings=Object.fromEntries(style.inputs.map(input=>[input.id,input]));
+        settings.compactLegend.checked=qml.mode==="continuous";
+        settings.numBinsInput.value=String(qml.values.length);settings.renderModeSelect.value=qml.mode;
+        settings.chkManualLimits.checked=true;settings.chkPercentiles.checked=false;settings.chkReverse.checked=false;
+        settings.manualMinInput.value=String(qml.minimum);settings.manualMaxInput.value=String(qml.maximum);
+        sourceStyles.set(info.sourceId+":"+qml.band,style);
+        if(qml.band!==info.activeBand)vscode.postMessage({type:"changeBand",sourceId:info.sourceId,band:qml.band});
+        else {applyStyleControls(style);renderRampGrid();updateActiveRampBar();updateAndRender();}
+      }catch(error){document.getElementById("styleStatus").textContent=error.message;}
+      finally{event.target.value="";}
+    });
+
+    let histogramPlot=null;
+    function redrawHistogram(){
+      if(!histogramPlot || !rasterInfo)return;
+      const p=histogramPlot;drawHistogramAndBreaks(p.breakResult,p.stops,p.counts,p.min,p.max);
+    }
+    function drawHistogramAnnotations(context,counts,min,max){
+      if(!rasterInfo)return;
+      const es=currentLang==="es",s=rasterInfo.stats;
+      const sigma=Math.max(0,Math.min(10,Number(document.getElementById("histogramSigma").value)||0));
+      const summary=histogramSummary(rasterInfo.sampleData,counts,min,max,s.mean,s.stddev,sigma);
+      const f=value=>Number.isFinite(value) ? Number(value.toPrecision(7)).toString() : "—";
+      document.getElementById("histogramSummary").textContent=(es ? "Muestras válidas: " : "Valid samples: ")+summary.total+
+        (es ? " · En rango: " : " · In range: ")+summary.inRange+"\\n"+
+        (es ? "Media: " : "Mean: ")+f(s.mean)+(es ? " · Mediana: " : " · Median: ")+f(summary.median)+
+        (es ? " · Moda ≈ (en rango): " : " · Mode ≈ (in range): ")+f(summary.modes[0])+
+        (summary.modes.length>1 ? " ("+summary.modes.length+(es ? " intervalos empatados)" : " tied bins)") : "")+
+        "\\n"+(es ? "Rango original estimado: " : "Estimated original range: ")+f(s.minimum)+" – "+f(s.maximum);
+      const canvas=document.getElementById("histogramCanvas"),width=canvas.width,height=canvas.height-24;
+      const x=value=>Math.max(0,Math.min(width,(value-min)/(max-min)*width));
+      const enabled=document.getElementById("histogramSigmaOverlay").checked;
+      document.getElementById("sigmaSummary").textContent=enabled ? "["+f(summary.low)+", "+f(summary.high)+"] · "+summary.inside+"/"+summary.total+
+        " ("+(summary.total ? 100*summary.inside/summary.total : 0).toFixed(1)+"%) · "+
+        (es ? "de todas las muestras válidas; no modifica la rampa" : "of all valid samples; does not change the ramp") : "";
+      if(enabled){context.fillStyle="rgba(80,180,100,0.18)";context.fillRect(x(summary.low),0,x(summary.high)-x(summary.low),height);}
+      if(document.getElementById("histogramMarkers").checked){
+        const markers=[[s.mean,es ? "Media" : "Mean","#60a5fa"],[summary.median,es ? "Mediana" : "Median","#c084fc"],
+          ...summary.modes.map(value=>[value,es ? "Moda ≈" : "Mode ≈","#fb923c"])];
+        markers.forEach(([value,label,color],i)=>{
+          if(value<min || value>max || !Number.isFinite(value))return;
+          context.strokeStyle=color;context.lineWidth=2;context.beginPath();context.moveTo(x(value),0);context.lineTo(x(value),height);context.stroke();
+          if(i<3){context.fillStyle=color;context.fillText(label,Math.max(0,Math.min(width-55,x(value)+3)),12+i*14);}
+        });
+      }
+      context.fillStyle="#aaaaaa";context.font="11px sans-serif";
+      context.fillText(f(min),2,height+18);const label=f(max);context.fillText(label,Math.max(2,width-context.measureText(label).width-2),height+18);
+    }
+    for(const id of ["histogramSigma","histogramSigmaOverlay","histogramMarkers"])document.getElementById(id).addEventListener("input",redrawHistogram);
+    new ResizeObserver(redrawHistogram).observe(document.getElementById("histogramCanvas"));
+    document.getElementById("histogramCanvas").addEventListener("mousemove",event=>{
+      if(!histogramPlot)return;
+      const {min,max,counts}=histogramPlot,rect=event.target.getBoundingClientRect();
+      const fraction=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));
+      const index=Math.min(counts.length-1,Math.floor(fraction*counts.length));
+      document.getElementById("histogramCursor").textContent=(currentLang==="es" ? "Valor: " : "Value: ")+(min+fraction*(max-min)).toPrecision(7)+
+        (currentLang==="es" ? " · Frecuencia: " : " · Count: ")+counts[index];
+    });
+    document.getElementById("histogramCanvas").addEventListener("mouseleave",()=>document.getElementById("histogramCursor").textContent="");
+
+    const batchSelection=new Set();let batchAnchor=null,batchDragging=false,batchRows=[],batchJob=null,batchPending=null,batchRequest=0;
+    function batchIds(node){return node.kind==="group" ? tree.layers(node.id).map(layer=>layer.id) : [node.id];}
+    function renderBatchList(){
+      const list=document.getElementById("batchList"),query=document.getElementById("sourceSearch").value.toLowerCase();list.replaceChildren();
+      for(const id of batchSelection)if(!sourceEntries.some(source=>source.id===id))batchSelection.delete(id);
+      batchRows=[];
+      const walk=(parent,depth)=>tree.nodes.filter(node=>node.parent===parent).forEach(node=>{
+        batchRows.push({node,depth});if(node.kind==="group")walk(node.id,depth+1);
+      });
+      if(document.getElementById("batchView").value==="alpha")batchRows=tree.nodes.filter(node=>node.kind==="layer").sort((a,b)=>a.name.localeCompare(b.name)).map(node=>({node,depth:0}));else walk(null,0);
+      batchRows=batchRows.filter(({node})=>!query || node.kind==="group" || (node.name+(sourceEntries.find(s=>s.id===node.id)?.path||"")).toLowerCase().includes(query));
+      batchRows.forEach(({node,depth},index)=>{
+        const button=document.createElement("button"),ids=batchIds(node),selected=ids.length && ids.every(id=>batchSelection.has(id));
+        button.className="btn btn-secondary"+(selected ? " batch-selected" : "");button.dataset.id=node.id;button.setAttribute("role","option");button.setAttribute("aria-selected",String(Boolean(selected)));
+        button.textContent="  ".repeat(depth)+(node.kind==="group" ? "▾ " : "")+node.name;button.title=node.name;
+        const select=(event,drag=false)=>{
+          if(batchJob)return;
+          const wasSelected=ids.length>0 && ids.every(id=>batchSelection.has(id));
+          if(!event.ctrlKey && !event.metaKey && !event.shiftKey && !drag)batchSelection.clear();
+          if(event.shiftKey && batchAnchor!==null){
+            const anchor=Math.max(0,batchRows.findIndex(row=>row.node.id===batchAnchor));
+            for(let i=Math.min(anchor,index);i<=Math.max(anchor,index);i++)batchIds(batchRows[i].node).forEach(id=>batchSelection.add(id));
+          }else ids.forEach(id=>{if((event.ctrlKey||event.metaKey)&&!drag&&wasSelected)batchSelection.delete(id);else batchSelection.add(id);});
+          if(!drag&&!event.shiftKey)batchAnchor=node.id;
+          refreshBatchSelection();
+        };
+        button.addEventListener("mousedown",event=>{if(event.button!==0)return;batchDragging=true;select(event);});
+        button.addEventListener("mouseenter",event=>{if(batchDragging)select(event,true);});
+        button.addEventListener("keydown",event=>{if(event.key===" " || event.key==="Enter"){event.preventDefault();select(event);}});
+        list.appendChild(button);
+      });
+    }
+    function refreshBatchSelection(){
+      document.querySelectorAll("#batchList button").forEach(button=>{
+        const node=tree.nodes.find(n=>n.id===button.dataset.id);if(!node)return;
+        const ids=batchIds(node),selected=ids.length>0&&ids.every(id=>batchSelection.has(id));
+        button.classList.toggle("batch-selected",selected);button.setAttribute("aria-selected",String(selected));
+      });
+    }
+    window.addEventListener("mouseup",()=>batchDragging=false);
+    document.getElementById("batchView").addEventListener("change",()=>{batchAnchor=null;renderBatchList();});
+    document.getElementById("batchAll").addEventListener("click",()=>{batchRows.forEach(({node})=>batchIds(node).forEach(id=>batchSelection.add(id)));refreshBatchSelection();});
+    document.getElementById("batchNone").addEventListener("click",()=>{batchSelection.clear();refreshBatchSelection();});
+    document.getElementById("batchCancel").addEventListener("click",()=>{
+      if(!batchJob)return;batchJob.cancelled=true;vscode.postMessage({type:"cancelBatch"});
+      if(batchPending){const pending=batchPending;batchPending=null;pending.reject(new Error("Cancelled"));}
+    });
+    document.getElementById("batchApply").addEventListener("click",async()=>{
+      if(batchJob || !rasterInfo)return;
+      const ids=[...batchSelection],status=document.getElementById("batchStatus"),es=currentLang==="es";
+      if(!ids.length){status.textContent=es ? "Selecciona al menos una capa." : "Select at least one layer.";return;}
+      const job={cancelled:false};batchJob=job;
+      const style=JSON.parse(JSON.stringify(captureStyle())),band=rasterInfo.activeBand,failures=[];let done=0;
+      document.getElementById("batchApply").disabled=true;document.getElementById("batchCancel").disabled=false;
+      for(const id of ids){
+        if(job.cancelled)break;
+        status.textContent=(es ? "Procesando " : "Processing ")+(done+failures.length+1)+"/"+ids.length;
+        try{
+          const info=await new Promise((resolve,reject)=>{const request=++batchRequest;batchPending={request,resolve,reject};vscode.postMessage({type:"batchPreview",id,band,request});});
+          if(job.cancelled)break;
+          if(!sourceEntries.some(source=>source.id===id))throw new Error("Layer removed");
+          info.previewData=new Float64Array(info.previewDataBuffer);info.sampleData=new Float64Array(info.sampleDataBuffer);
+          const result=computeStyle(info,style),canvas=document.createElement("canvas");
+          drawRasterCanvas(info.previewWidth,info.previewHeight,info.previewData,result.values,result.colours,result.renderMode,canvas);
+          sourceStyles.set(id+":"+band,style);sourceBands.set(id,band);saveLayerView(info,canvas);
+          if(rasterInfo?.sourceId===id && rasterInfo.activeBand===band){applyStyleControls(style);renderRampGrid();updateActiveRampBar();renderNow();}
+          done++;renderComposition();renderSources();
+        }catch(error){if(!job.cancelled)failures.push((sourceEntries.find(source=>source.id===id)?.name || id)+": "+error.message);}
+      }
+      batchJob=null;persistProject();document.getElementById("batchApply").disabled=false;document.getElementById("batchCancel").disabled=true;
+      status.textContent=(job.cancelled ? (es ? "Cancelado. " : "Cancelled. ") : "")+done+"/"+ids.length+(es ? " aplicadas" : " applied")+
+        (failures.length ? "\\n"+failures.join("\\n") : "");
+    });
 
     // Viewport Pan & Zoom Controls (Focal Point at Mouse Cursor)
     function updateTransform() {
@@ -1796,6 +2050,7 @@ export function getWebviewContent(
         document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
         tab.classList.add("active");
         document.getElementById(tab.getAttribute("data-tab")).classList.add("active");
+        redrawHistogram();
       });
     });
 
@@ -1808,8 +2063,9 @@ export function getWebviewContent(
       });
     });
 
+    langSelect.value=currentLang; updateLanguage();
     // Send ready handshake to extension host once scripts are loaded
-    vscode.postMessage({ type: "ready" });
+    vscode.postMessage({ type: "ready", bands:Object.fromEntries(sourceBands) });
   </script>
 </body>
 </html>`;

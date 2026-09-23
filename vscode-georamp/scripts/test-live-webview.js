@@ -63,7 +63,9 @@ function assert(condition, message) {
 
 async function main() {
   const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+  const requestedTarget = process.argv.find(arg => arg.startsWith('--webview='))?.slice('--webview='.length);
   const webviewTarget = targets.find((target) =>
+    (!requestedTarget || target.id === requestedTarget) &&
     target.type === 'iframe' && target.url.includes('extensionId=jordanzav.georamp')
   );
   const pageTarget = targets.find((target) => target.type === 'page');
@@ -109,7 +111,8 @@ async function main() {
       statusText: statusOverlay.textContent,
       bodyText: document.body.innerText.slice(0, 500),
       canvasWidth: rasterCanvas.width,
-      canvasHeight: rasterCanvas.height
+      canvasHeight: rasterCanvas.height,
+      style: captureStyle(), language:currentLang, band:rasterInfo?.activeBand
     })`);
     webview.socket.close();
     console.log(JSON.stringify(state, null, 2));
@@ -247,8 +250,26 @@ async function main() {
   assert(controls.filteredRamps === 1, `Ramp search returned ${controls.filteredRamps} results instead of one.`);
   assert(controls.breaksTabActive, 'Histogram and breaks tab did not activate.');
   assert(controls.hiddenResetPreserved, 'Reset Zoom changed zoom while the viewer was hidden.');
-  assert(/^Coord: E:/.test(controls.geoOverlay), `Projected coordinate overlay is invalid: ${controls.geoOverlay}`);
+  assert(/^(Coord: E:|EPSG:\d+ X:)/.test(controls.geoOverlay), `Projected coordinate overlay is invalid: ${controls.geoOverlay}`);
   assert(controls.pngDataUrlValid, 'PNG export payload could not be generated.');
+
+  const qgisFeatures = await evaluate(`(async () => {
+    const histogram=document.getElementById('histogramSummary').textContent;
+    const sigma=document.getElementById('sigmaSummary').textContent;
+    const exported=exportQml(lastRenderedStyle,false),parsed=parseQml(exported,DOMParser);
+    document.getElementById('batchAll').click();document.getElementById('batchApply').click();
+    const deadline=Date.now()+30000;
+    while(batchJob && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+    if(batchJob)throw new Error('Batch did not finish');
+    return {histogram,sigma,qmlStops:parsed.values.length,mode:parsed.mode,
+      batch:document.getElementById('batchStatus').textContent,
+      persisted:Boolean(vscode.getState().sourceStyles[rasterInfo.sourceId+':'+rasterInfo.activeBand])};
+  })()`);
+  assert(/Median:/.test(qgisFeatures.histogram), 'Histogram median is missing');
+  assert(/all valid samples/.test(qgisFeatures.sigma), 'Observed sigma coverage is missing');
+  assert(qgisFeatures.qmlStops === 17 && qgisFeatures.mode === 'discrete', 'QML stopped matching the visible style');
+  assert(/1\/1 applied/.test(qgisFeatures.batch), 'Real batch read did not apply the style');
+  assert(qgisFeatures.persisted, 'Style was not persisted in webview state');
 
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert(webview.exceptions.length === 0, `Webview exceptions: ${webview.exceptions.join('; ')}`);
@@ -277,11 +298,11 @@ async function main() {
   webview.socket.close();
   page.socket.close();
   console.log(JSON.stringify({
-    initial, palette, controls, screenshotPath, histogramScreenshotPath,
+    initial, palette, controls, qgisFeatures, screenshotPath, histogramScreenshotPath,
   }, null, 2));
 }
 
 main().catch((error) => {
   console.error(error);
-  process.exitCode = 1;
+  process.exit(1);
 });

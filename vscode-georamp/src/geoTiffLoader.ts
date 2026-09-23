@@ -68,7 +68,13 @@ export async function loadGeoTiffBand(
       resampleMethod: 'nearest', signal,
     });
     const previewData = normalizeRaster(rasterResult as unknown as TypedArray, noDataValue);
-    const sampleData = previewData;
+    // A fixed grid makes classification independent of display size and batch mode.
+    const sampleResult = previewWidth === 512 && previewHeight === 512 ? rasterResult : await readOverview(tiff, image, {
+      samples: [activeBand], interleave: true, width: 512, height: 512,
+      resampleMethod: 'nearest', signal,
+    });
+    signal?.throwIfAborted();
+    const sampleData = sampleResult === rasterResult ? previewData : normalizeRaster(sampleResult as unknown as TypedArray, noDataValue);
 
     return {
       width,

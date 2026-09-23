@@ -10,7 +10,7 @@ continuous or classified colour tables without losing NoData semantics.
 
 [![Status: release candidate](https://img.shields.io/badge/status-release%20candidate-f59e0b)](#project-status)
 [![QGIS plugin 1.0.0](https://img.shields.io/badge/QGIS%20plugin-1.0.0-589632?logo=qgis&logoColor=white)](georamp/metadata.txt)
-[![VS Code extension 0.3.0](https://img.shields.io/badge/VS%20Code-0.3.0-007acc?logo=visualstudiocode&logoColor=white)](vscode-georamp/package.json)
+[![VS Code extension 0.4.0](https://img.shields.io/badge/VS%20Code-0.4.0-007acc?logo=visualstudiocode&logoColor=white)](vscode-georamp/package.json)
 [![Tests](https://img.shields.io/github/actions/workflow/status/jordan-zav/GeoRamp/tests.yml?branch=main&label=tests)](https://github.com/jordan-zav/GeoRamp/actions/workflows/tests.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-0f766e)](LICENSE)
 
@@ -134,6 +134,9 @@ npm run package:vsix
 The extension registers **GeoRamp: Open GeoTIFF Viewer** for `.tif` and `.tiff`
 files. Large TIFF/BigTIFF files are decoded into a bounded preview controlled by
 `georamp.previewMaxDimension`; this preview is not a full-resolution export.
+Version 0.4.0 adds QGIS-style histogram inspection, batch styling, saved preferences
+and single-band pseudocolor QML exchange. See the [extension guide](vscode-georamp/README.md)
+for supported QML renderers and sampling limitations.
 
 ## Development and verification
 
@@ -173,7 +176,7 @@ signed and NoData-rich rasters.
 The QGIS plugin is packaged as version 1.0.0 for its first public submission;
 earlier version numbers were internal development labels. Publication on the
 QGIS plugin repository is pending. The independently versioned VS Code
-extension remains at 0.3.0.
+extension is now at 0.4.0.
 
 ## License and contact
 

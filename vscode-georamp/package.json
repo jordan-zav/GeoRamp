@@ -2,7 +2,7 @@
   "name": "georamp",
   "displayName": "GeoRamp — GeoTIFF & Raster Viewer",
   "description": "Open, overlay and explore geospatial rasters in VS Code with scientific color ramps.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "jordanzav",
   "license": "GPL-3.0-or-later",
   "repository": {
@@ -80,7 +80,7 @@
     }
   },
   "scripts": {
-    "test": "node scripts/run-tests.js && node scripts/test-import-manager.js && node scripts/test-import-provider.js",
+    "test": "node scripts/run-tests.js && node scripts/test-import-manager.js && node scripts/test-import-provider.js && node scripts/test-qgis-features.js",
     "typecheck": "tsc --noEmit",
     "build": "node esbuild.js",
     "check:webview": "node scripts/validate-webview.js",

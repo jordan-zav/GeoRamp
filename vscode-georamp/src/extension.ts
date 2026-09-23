@@ -49,7 +49,9 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
     let sourceUri = document.uri;
     const sendSources = () => panel.webview.postMessage({ type: 'sources', activeId: sourceId,
       sources: [...sources].map(([id, uri]) => ({ id, name: path.basename(uri.fsPath), path: uri.fsPath })) });
-    let activeBand = 0;
+    const savedPreferences=this.context.globalState?.get<any>("georamp.preferences");
+    let activeBand = Number.isInteger(savedPreferences?.band) ? Math.max(0,savedPreferences.band) : 0;
+    let batchController: AbortController | undefined;
     let sequence = 0;
     let disposed = false;
     let controller: AbortController | undefined;
@@ -64,6 +66,7 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
     };
     panel.onDidDispose(() => {
       disposed = true;
+      batchController?.abort();
       layerControllers.forEach(c => c.abort());
       cancelCurrent();
     });
@@ -121,7 +124,39 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
     };
 
     panel.webview.onDidReceiveMessage(async (message: any) => {
-      if (message?.type === 'ready') {
+      if (message?.type === 'savePreferences' && message.preferences && typeof message.preferences === 'object') {
+        // Bound persisted data; never store source pixels or file contents here.
+        if (JSON.stringify(message.preferences).length < 150000) {
+          const preferences={...message.preferences,band:activeBand};
+          await this.context.globalState?.update('georamp.preferences',preferences);
+        }
+      } else if (message?.type === 'saveQml' && sources.has(sourceId) && message.sourceId === sourceId
+          && typeof message.text === 'string' && message.text.length < 150000) {
+        try {
+          const baseName=path.basename(sourceUri.fsPath,path.extname(sourceUri.fsPath));
+          const target=await vscode.window.showSaveDialog({defaultUri:vscode.Uri.file(path.join(path.dirname(sourceUri.fsPath),baseName+'-georamp.qml')),filters:{QML:['qml']}});
+          if(target){await vscode.workspace.fs.writeFile(target,Buffer.from(message.text,'utf8'));
+            await panel.webview.postMessage({type:'styleSaved',message:'QML: '+path.basename(target.fsPath)});}
+        }catch(error){await panel.webview.postMessage({type:'styleError',message:error instanceof Error ? error.message : String(error)});}
+      } else if (message?.type === 'cancelBatch') {
+        batchController?.abort();
+      } else if (message?.type === 'batchPreview' && Number.isInteger(message.request)) {
+        batchController?.abort();
+        const abort=new AbortController();batchController=abort;
+        try {
+          const uri=sources.get(message.id);
+          if(!uri || !Number.isInteger(message.band) || message.band<0)throw new Error('Invalid layer or band');
+          const data=await loadGeoTiffBand(uri.fsPath,message.band,512,abort.signal);
+          if(data.activeBand!==message.band)throw new Error('Requested band is unavailable');
+          if(disposed || abort.signal.aborted)return;
+          if(!sources.has(message.id))throw new Error('Layer removed');
+          await panel.webview.postMessage({type:'batchPreview',request:message.request,data:{...data,sourceId:message.id,
+            previewData:undefined,sampleData:undefined,previewDataBuffer:data.previewData.buffer,sampleDataBuffer:data.sampleData.buffer}});
+        }catch(error){if(!disposed && !abort.signal.aborted)await panel.webview.postMessage({type:'batchError',request:message.request,message:error instanceof Error ? error.message : String(error)});}
+      } else if (message?.type === 'ready') {
+        const restoredBand=message.bands?.[sourceId];
+        if(Number.isInteger(restoredBand) && restoredBand>=0)activeBand=restoredBand;
+        await panel.webview.postMessage({type:'preferences',preferences:savedPreferences || {}});
         await sendSources();
         await loadAndSend(activeBand);
       } else if (message?.type === 'layerPreview' && sources.has(message.id)) {
@@ -129,11 +164,11 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
         layerControllers.get(id)?.abort();
         const abort = new AbortController(); layerControllers.set(id, abort);
         try {
-          const data = await loadGeoTiffBand(sources.get(id)!.fsPath, 0, 512, abort.signal);
+          const data = await loadGeoTiffBand(sources.get(id)!.fsPath, Number.isInteger(message.band) ? message.band : 0, 512, abort.signal);
           if (disposed || abort.signal.aborted || !sources.has(id)) return;
           await panel.webview.postMessage({type:'layerPreview', id,
             data:{...data, sourceId:id, previewData:undefined, sampleData:undefined,
-              previewDataBuffer:data.previewData.buffer}});
+              previewDataBuffer:data.previewData.buffer,sampleDataBuffer:data.sampleData.buffer}});
         } catch (error) {
           if (!disposed && !abort.signal.aborted) await panel.webview.postMessage({type:'layerError',id,
             message:error instanceof Error ? error.message : String(error)});
@@ -150,9 +185,9 @@ export class GeoRampEditorProvider implements vscode.CustomReadonlyEditorProvide
           if (first) await loadAndSend(0);
         } else { await sendSources(); }
       } else if (message?.type === 'selectSource' && sources.has(message.id)) {
-        sourceId = message.id; sourceUri = sources.get(sourceId)!; activeBand = 0;
+        sourceId = message.id; sourceUri = sources.get(sourceId)!; activeBand = Number.isInteger(message.band) && message.band>=0 ? message.band : 0;
         await sendSources();
-        await loadAndSend(0);
+        await loadAndSend(activeBand);
       } else if (message?.type === 'removeSource' && sources.has(message.id)) {
         layerControllers.get(message.id)?.abort();
         sources.delete(message.id);

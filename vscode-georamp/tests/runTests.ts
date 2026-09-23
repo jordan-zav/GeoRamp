@@ -168,3 +168,14 @@ const drawingContext=new Proxy({}, {get:(_target,key)=>key==='drawImage' ? ()=>{
 projection.draw(drawingContext,{width:100,height:100},geographicRaster,'EPSG:32718',camera);
 assert.ok(triangleCount>=128,'Different CRS must use a nonlinear mesh, not one affine transform');
 console.log('Project CRS catalog, UTM hemispheres, inverse probes, source overrides and nonlinear warp passed');
+
+// Classification samples must not depend on viewer size (including batch previews).
+async function checkSampleGrid() {
+  const file=path.resolve('tests/fixtures/float64-tiled.tif');
+  const small=await loadGeoTiffBand(file,0,32),large=await loadGeoTiffBand(file,0,1400);
+  assert.equal(small.sampleData.length,512*512);
+  assert.deepEqual(small.stats,large.stats);
+  assert.deepEqual(small.sampleData,large.sampleData);
+  console.log('Fixed statistics grid is independent of preview dimensions');
+}
+checkSampleGrid().catch(error=>{console.error(error);process.exitCode=1;});
