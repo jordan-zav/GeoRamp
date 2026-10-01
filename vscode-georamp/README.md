@@ -142,3 +142,27 @@ Other renderer types, clipped ramps, discrete ramps without an infinite final
 class, alpha bands and custom transparency are
 reported as unsupported rather than silently approximated. QML exchanges the
 renderer, not QGIS project layers, CRS operations or GeoRamp's distribution recipe.
+
+## A checked layer is missing from the overlay
+
+The project CRS defines the display coordinate system. It does not supply a
+missing source CRS. Version 0.4.1 shows the skipped layer and the reason directly
+on the viewer, distinguishing unknown CRS from missing georeferencing.
+
+For a raster with a pixel-to-map transform but unknown CRS, its row offers
+**Assign EPSG:…** using the current project CRS. Use that action only when it is
+the raster's actual source CRS; otherwise select the raster and enter the correct
+code under **Source CRS**. Assignments persist in viewer state and do not change
+the TIFF. A raster without a pixel-to-map transform must first be georeferenced.
+
+The first layer in the tree draws on top. With two overlapping opaque layers,
+only the upper one is visible in the overlap; lower its opacity to see both.
+Transparent NoData pixels expose the layers underneath. Selecting a layer for
+editing does not bring it to the front.
+
+A manual renderer regression is available in `scripts/test-live-overlays.js`.
+It decodes a second TIFF with the real loader, delivers it through the webview
+message contract, and checks actual canvas pixels for order, 50% blending and
+NoData transparency. It accepts an isolated development-host debugging port,
+a TIFF with a missing source CRS, an output screenshot path and the explicit
+CRS assignment. `--browser` can target a standalone copy of the same webview.

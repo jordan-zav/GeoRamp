@@ -32,9 +32,17 @@ export function convert(from:string|number,to:string|number,point:Point): Point 
   if (!output.every(Number.isFinite)) throw new Error('Fuera del dominio del CRS');
   return output;
 }
+/** A CRS assignment cannot repair a missing pixel-to-map transform. */
+export function alignmentIssue(info:any): 'missing-georeference'|'missing-crs'|null {
+  if (!info.geo?.transform) return 'missing-georeference';
+  if (!(info.geo.assignedCrs || info.geo.epsg)) return 'missing-crs';
+  return null;
+}
 export function mapper(info:any,project:string) {
   const code=info.geo?.assignedCrs || info.geo?.epsg;
-  if (!code || !info.geo?.transform) throw new Error('Asigna un CRS de origen a esta capa');
+  const issue=alignmentIssue(info);
+  if (issue==='missing-georeference') throw new Error('Falta la georreferenciación del ráster; asignar un CRS no define su ubicación.');
+  if (issue==='missing-crs') throw new Error('Asigna el CRS de origen real de esta capa. El CRS del proyecto no lo sustituye.');
   const from=describe(code).id,to=describe(project).id;
   const key=from+'>'+to;
   if (!converters.has(key)) converters.set(key,proj4(from,to));

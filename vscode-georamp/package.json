@@ -2,7 +2,7 @@
   "name": "georamp",
   "displayName": "GeoRamp — GeoTIFF & Raster Viewer",
   "description": "Open, overlay and explore geospatial rasters in VS Code with scientific color ramps.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "jordanzav",
   "license": "GPL-3.0-or-later",
   "repository": {

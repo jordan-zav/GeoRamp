@@ -376,6 +376,12 @@ export function getWebviewContent(
     }
     .layer-options { display:flex; width:100%; align-items:center; gap:5px; padding:0 6px 6px; }
     .layer-options input[type=range] { width:65px; min-width:30px; flex:1; }
+    #compositionStatus { position:absolute; top:10px; left:10px; right:10px; z-index:5;
+      padding:8px 10px; max-height:30%; overflow:auto; white-space:pre-wrap;
+      background:var(--vscode-editorWidget-background,#252526); border:1px solid var(--vscode-editorWarning-foreground,#cca700);
+      color:var(--vscode-editor-foreground,#ddd); font-size:12px; }
+    #compositionStatus[hidden] { display:none; }
+    .layer-status.blocked { color:var(--vscode-editorWarning-foreground,#cca700); }
     .layer-status { width:100%; padding:0 8px 5px; font-size:10px; color:var(--vscode-descriptionForeground,#bbb); }
     .layer-visible { margin:8px 3px 8px 6px; }
     .batch-selected { outline: 1px solid var(--vscode-focusBorder, #3794ff); }
@@ -439,6 +445,7 @@ export function getWebviewContent(
       <div class="tab-content active" id="viewerTab">
         <div class="viewport" id="viewport">
           <canvas id="compositionCanvas" style="position:absolute;left:0;top:0;pointer-events:none"></canvas><canvas id="rasterCanvas" style="visibility:hidden"></canvas><canvas id="detailCanvas" style="visibility:hidden;position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;image-rendering:pixelated;background-color:var(--vscode-editor-background,#20242b);background-image:repeating-conic-gradient(#88888812 0% 25%,transparent 0% 50%);background-size:20px 20px"></canvas>
+          <div id="compositionStatus" role="status" aria-live="polite" hidden></div>
           <div class="status-overlay" id="statusOverlay">Cargando GeoTIFF...</div>
           <div class="viewport-overlay" id="viewportOverlay">
             <span id="posOverlay">Píxel: X: - Y: -</span>
@@ -960,6 +967,16 @@ export function getWebviewContent(
         persistProject();projectLabel();if(!viewInitialized)resetTransform();else updateTransform();renderSources();
       }catch(error){document.getElementById("projectCrsStatus").textContent=error.message;}
     }
+    function assignLayerProjectCrs(id){
+      const view=layerViews.get(id),info=rasterInfo?.sourceId===id ? rasterInfo : view?.info;
+      if(!info || !projectCrs || !info.geo?.transform)return;
+      const crs=projection.describe(projectCrs).id;
+      sourceAssignments.set(id,crs);
+      info.geo={...info.geo,assignedCrs:crs};
+      if(view)view.info.geo={...info.geo};
+      if(rasterInfo?.sourceId===id)document.getElementById("sourceCrs").value=crs;
+      persistProject();updateTransform();renderSources();
+    }
     document.getElementById("assignSourceCrs").addEventListener("click",()=>assignSource());
     document.getElementById("resetSourceCrs").addEventListener("click",()=>assignSource(true));
     const tree = new LayerTree(), layerViews = new Map(), layerErrors = new Map();
@@ -991,10 +1008,16 @@ export function getWebviewContent(
       const rect=viewport.getBoundingClientRect();
       compositionCanvas.width=Math.max(1,Math.round(rect.width)); compositionCanvas.height=Math.max(1,Math.round(rect.height));
       const context=compositionCanvas.getContext("2d"); context.imageSmoothingEnabled=false;
+      const notice=document.getElementById("compositionStatus"),blocked=[];
+      notice.hidden=true;notice.textContent="";
       if (!projectCrs && !rasterInfo) return;
+      let expected=0,drawn=0;
       for (const layer of tree.layers().reverse()) {
         const view=layerViews.get(layer.id);
-        if (!layer.visible || !view || layer.opacity <= 0) continue;
+        if (!layer.visible || layer.opacity <= 0) continue;
+        expected++;
+        const name=tree.nodes.find(node=>node.id===layer.id)?.name || layer.id;
+        if(!view){if(layerErrors.has(layer.id))blocked.push(name+": "+layerErrors.get(layer.id));continue;}
         try {
           const surface=document.createElement("canvas");surface.width=compositionCanvas.width;surface.height=compositionCanvas.height;surface.dataset.sourceId=layer.id;
           const target=surface.getContext("2d");target.imageSmoothingEnabled=false;
@@ -1007,12 +1030,25 @@ export function getWebviewContent(
               projection.draw(target,detailCanvas,rasterInfo,projectCrs,camera(),detail.window);
             } else projection.draw(target,view.canvas,view.info,projectCrs,camera());
           }else if(layer.id===rasterInfo?.sourceId){target.translate(panX,panY);target.scale(zoom,zoom);target.drawImage(view.canvas,0,0);}
-          else continue;
-          context.globalAlpha=layer.opacity;context.drawImage(surface,0,0);
-        }catch { /* The layer row explains unsupported or missing source CRS. */ }
+          else {blocked.push(name+": "+alignmentMessage(view.info));continue;}
+          context.globalAlpha=layer.opacity;context.drawImage(surface,0,0);drawn++;
+        }catch(error) { blocked.push(name+": "+(alignmentMessage(view.info) || error.message)); }
+      }
+      context.globalAlpha=1;
+      if(blocked.length){
+        notice.hidden=false;
+        notice.textContent=drawn+"/"+expected+(currentLang==="es" ? " capas dibujadas. Capas omitidas:" : " layers drawn. Skipped layers:")+"\\n"+blocked.join("\\n");
       }
     }
+    function alignmentMessage(info){
+      const issue=projection.alignmentIssue(info),es=currentLang==="es";
+      if(issue==="missing-georeference")return es ? "Sin georreferenciación. Asignar un CRS no define su ubicación; georreferencia el archivo antes de superponerlo." : "Missing georeferencing. Assigning a CRS does not locate the raster; georeference the file before overlaying it.";
+      if(issue==="missing-crs")return es ? "CRS de origen no reconocido. Selecciona la capa y asigna su CRS real en Datos; el CRS del proyecto no lo sustituye." : "Source CRS not recognized. Select the layer and assign its actual CRS under Data; the project CRS does not replace it.";
+      if(!projectCrs)return es ? "Define el CRS del proyecto para superponer capas." : "Set the project CRS to overlay layers.";
+      return "";
+    }
     function crsStatus(info){
+      const problem=alignmentMessage(info);if(problem)return problem;
       if(!projectCrs)return info.geo?.crs || "Sin CRS";
       try{projection.mapper(info,projectCrs);const source=projection.describe(info.geo.assignedCrs || info.geo.epsg);
         return source.id+(source.id!==projectCrs ? " > "+projectCrs : "")+(info.geo.assignedCrs ? " (asignado)" : "")+(source.id!==projectCrs && (source.accuracy>0 || projection.describe(projectCrs).accuracy>0) ? " / datum aprox." : "");
@@ -1079,8 +1115,15 @@ export function getWebviewContent(
           row.appendChild(options);
           if(node.kind==="layer") {
             const view=layerViews.get(node.id),status=document.createElement("div");status.className="layer-status";
-            status.textContent=layerErrors.get(node.id) || (!view ? "Cargando vista..." : crsStatus(view.info));
+            status.textContent=layerErrors.get(node.id) || (!view ? (currentLang==="es" ? "Cargando vista..." : "Loading preview...") : crsStatus(view.info));
+            status.classList.toggle("blocked",Boolean(layerErrors.has(node.id) || (view && alignmentMessage(view.info))));
             row.appendChild(status);
+            if(view && projectCrs && projection.alignmentIssue(view.info)==="missing-crs"){
+              const assign=document.createElement("button");assign.className="btn btn-secondary source-assign-crs";
+              assign.textContent=(currentLang==="es" ? "Asignar " : "Assign ")+projectCrs;
+              assign.title=currentLang==="es" ? "Usar solo si este es el CRS real de la capa. No modifica el TIFF." : "Use only if this is the layer's actual CRS. Does not modify the TIFF.";
+              assign.addEventListener("click",()=>assignLayerProjectCrs(node.id));row.appendChild(assign);
+            }
           }
           list.appendChild(row);
           if(node.kind==="group" && (node.expanded || query))draw(node.id,depth+1);
@@ -1143,7 +1186,7 @@ export function getWebviewContent(
         loadNextLayer();renderSources();renderComposition();
       } else if (message.type === "layerError") {
         if(pendingLayer===message.id)pendingLayer=null;
-        layerErrors.set(message.id,message.message);loadNextLayer();renderSources();
+        layerErrors.set(message.id,message.message);loadNextLayer();renderSources();renderComposition();
       } else if (message.type === "empty") {
         clearRaster(); statusOverlay.hidden = false;
         statusOverlay.textContent = currentLang === "es" ? "Importa un raster para comenzar" : "Import a raster to start";
@@ -1196,7 +1239,7 @@ export function getWebviewContent(
       currentLang = e.target.value;
       renderSources();
       document.getElementById("sourceSearch").placeholder = currentLang === "es" ? "Buscar raster..." : "Search rasters...";
-      updateLanguage(); persistPreferences();
+      updateLanguage(); renderComposition(); persistPreferences();
     });
 
     function updateLanguage() {

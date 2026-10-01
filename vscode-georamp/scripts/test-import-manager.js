@@ -62,6 +62,31 @@ assert.deepEqual(draws.filter(draw=>draw.target==='compositionCanvas').map(draw=
 visible.checked=true;visible.dispatchEvent(new w.Event('change'));
 const opacity=d.querySelector('[data-id="b"] input[type=range]');opacity.value='50';draws.length=0;opacity.dispatchEvent(new w.Event('input'));
 assert.deepEqual(draws.filter(draw=>draw.target==='compositionCanvas').map(draw=>[draw.source,draw.alpha]),[['a',1],['b',0.5]]);
+// Reordering must change the compositing order without changing the active layer.
+const moveUp=d.querySelectorAll('[data-id="a"] .layer-options button')[0];
+draws.length=0;moveUp.click();
+assert.deepEqual(draws.filter(draw=>draw.target==='compositionCanvas').map(draw=>draw.source),['b','a']);
+const moveDown=d.querySelectorAll('[data-id="a"] .layer-options button')[1];
+draws.length=0;moveDown.click();
+assert.deepEqual(draws.filter(draw=>draw.target==='compositionCanvas').map(draw=>draw.source),['a','b']);
+// A checked layer missing its source CRS is omitted and explicitly identified.
+w.eval('layerViews.get("b").info.geo.epsg=null; layerViews.get("b").info.geo.crs="Sin CRS"; renderComposition(); renderSources();');
+assert.equal(d.getElementById('compositionStatus').hidden,false);
+assert.match(d.getElementById('compositionStatus').textContent,/1\/2 capas dibujadas/);
+assert.match(d.getElementById('compositionStatus').textContent,/second.tif/);
+assert.match(d.getElementById('compositionStatus').textContent,/CRS de origen no reconocido/);
+const assign=d.querySelector('[data-id="b"] .source-assign-crs');assert.ok(assign);
+draws.length=0;assign.click();
+assert.deepEqual(draws.filter(draw=>draw.target==='compositionCanvas').map(draw=>[draw.source,draw.alpha]),[['a',1],['b',0.5]]);
+assert.equal(d.getElementById('compositionStatus').hidden,true);
+assert.equal(w.eval('sourceAssignments.get("b")'),'EPSG:26910');
+// Assigning a CRS cannot fix a raster without its pixel-to-map transform.
+w.eval('layerViews.get("b").info.geo.transform=null;renderComposition();renderSources();');
+assert.match(d.getElementById('compositionStatus').textContent,/Sin georreferenciación/);
+assert.equal(d.querySelector('[data-id="b"] .source-assign-crs'),null);
+w.eval('layerViews.get("b").info.geo.transform=[1,0,0,0,-1,0];renderComposition();renderSources();');
+assert.equal(d.getElementById('compositionStatus').hidden,true);
+
 d.getElementById('groupName').value='Geophysics';d.getElementById('btnAddGroup').click();
 assert.equal(d.querySelectorAll('.group-row').length,1);
 const group=d.querySelector('.group-row'), drop=new w.Event('drop',{bubbles:true,cancelable:true});

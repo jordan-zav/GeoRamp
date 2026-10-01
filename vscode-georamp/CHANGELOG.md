@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-09-24
+
+- Show which checked layers cannot be drawn instead of silently omitting them.
+- Distinguish missing source CRS from missing raster georeferencing.
+- Add an explicit per-layer action to assign the project CRS to a raster with coordinates and unknown CRS; preserve the source file and layer order.
+- Verify stacking, opacity blending and NoData transparency, with regression coverage for missing-CRS recovery.
+
 ## 0.4.0 — 2026-09-19
 
 - Bring QGIS histogram inspection to VS Code: cursor, median, tied approximate modes, mean markers and observed sigma coverage.
