@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> · <a href="README.es.md">Español</a></p>
+
 <div align="center">
   <img src="assets/branding/georamp-logo.png" alt="GeoRamp" width="360">
 
@@ -35,7 +37,7 @@ active internal development and does not replace CRS-aware analysis in QGIS.
 
 ## Workflow at a glance
 
-```text
+~~~text
 Raster layer / GeoTIFF
         │
         ▼
@@ -49,7 +51,7 @@ Raster layer / GeoTIFF
         │
         ├──► QGIS renderer / QML style
         └──► bounded VS Code raster preview
-```
+~~~
 
 ## Capabilities
 
@@ -57,7 +59,7 @@ Raster layer / GeoTIFF
 | --- | --- |
 | Distributions | Linear, Normal, Equal Area/Histogram and Log-Linear |
 | Ramps | 27 built-in geophysical, scientific, divergent, topographic and bathymetric ramps |
-| Import | Text `CSV`, `TXT`, `TBL`, `ZON`, `CLR` and `LUT` colour tables |
+| Import | Text <code>CSV</code>, <code>TXT</code>, <code>TBL</code>, <code>ZON</code>, <code>CLR</code> and <code>LUT</code> colour tables |
 | Classification | 2–255 intervals, continuous or discrete representation |
 | Limits | Automatic/manual bounds, ramp inversion, sigma and percentile clipping |
 | Inspection | Responsive histogram, cursor coordinates, mean, median, approximate mode and observed coverage within mean ± n standard deviations |
@@ -79,25 +81,25 @@ requires a valid positive domain or an explicitly reviewed shift.
 
 ## Colour-table format
 
-GeoRamp accepts `R,G,B` or `position,R,G,B` rows separated by commas,
+GeoRamp accepts <code>R,G,B</code> or <code>position,R,G,B</code> rows separated by commas,
 semicolons or whitespace. Positions are sorted and normalized to 0–1; RGB values
 must be between 0 and 255.
 
-```text
+~~~text
 position,R,G,B
 0,0,0,255
 25,0,255,255
 50,0,255,0
 75,255,255,0
 100,255,0,0
-```
+~~~
 
 Imported colour tables are user-supplied data. Built-in ramps are independent
 visual approximations and are not proprietary commercial colour tables.
 
 ## Install the QGIS plugin
 
-1. build `dist/georamp-1.0.0.zip` using `python scripts/package_plugin.py`, or download it from [GitHub Releases](https://github.com/jordan-zav/GeoRamp/releases) when available;
+1. build <code>dist/georamp-1.0.0.zip</code> using <code>python scripts/package_plugin.py</code>, or download it from [GitHub Releases](https://github.com/jordan-zav/GeoRamp/releases) when available;
 2. open **Plugins → Manage and Install Plugins** in QGIS;
 3. choose **Install from ZIP**; and
 4. enable GeoRamp, then open **Raster → GeoRamp**.
@@ -121,19 +123,19 @@ behavior and text-table examples.
 
 ## GeoRamp — GeoTIFF & Raster Viewer
 
-From `vscode-georamp`:
+From <code>vscode-georamp</code>:
 
-```powershell
+~~~powershell
 npm install
 npm run typecheck
 npm test
 npm run build
 npm run package:vsix
-```
+~~~
 
-The extension registers **GeoRamp: Open GeoTIFF Viewer** for `.tif` and `.tiff`
+The extension registers **GeoRamp: Open GeoTIFF Viewer** for <code>.tif</code> and <code>.tiff</code>
 files. Large TIFF/BigTIFF files are decoded into a bounded preview controlled by
-`georamp.previewMaxDimension`; this preview is not a full-resolution export.
+<code>georamp.previewMaxDimension</code>; this preview is not a full-resolution export.
 Version 0.4.0 adds QGIS-style histogram inspection, batch styling, saved preferences
 and single-band pseudocolor QML exchange. See the [extension guide](vscode-georamp/README.md)
 for supported QML renderers and sampling limitations.
@@ -142,20 +144,20 @@ for supported QML renderers and sampling limitations.
 
 ### QGIS/Python
 
-```powershell
+~~~powershell
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 python scripts/package_plugin.py
-```
+~~~
 
 ### VS Code/TypeScript
 
-```powershell
+~~~powershell
 cd vscode-georamp
 npm run typecheck
 npm test
 npm run check:webview
-```
+~~~
 
 Software tests should be complemented with visual checks on constant, skewed,
 signed and NoData-rich rasters.
@@ -164,12 +166,12 @@ signed and NoData-rich rasters.
 
 | Path | Contents |
 | --- | --- |
-| `georamp` | QGIS plugin, metadata, ramps and localized interface |
-| `vscode-georamp` | VS Code custom GeoTIFF editor |
-| `tests` | Python distribution and metadata tests |
-| `test-data` | Small raster/style fixtures |
-| `scripts/package_plugin.py` | Reproducible QGIS ZIP builder |
-| `.github/workflows/tests.yml` | Automated Python and extension quality gates |
+| <code>georamp</code> | QGIS plugin, metadata, ramps and localized interface |
+| <code>vscode-georamp</code> | VS Code custom GeoTIFF editor |
+| <code>tests</code> | Python distribution and metadata tests |
+| <code>test-data</code> | Small raster/style fixtures |
+| <code>scripts/package_plugin.py</code> | Reproducible QGIS ZIP builder |
+| <code>.github/workflows/tests.yml</code> | Automated Python and extension quality gates |
 
 ## Project status
 
