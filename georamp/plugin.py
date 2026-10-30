@@ -1,27 +1,67 @@
+import bisect
 import math
 import os
 import re
-import bisect
 
+from qgis.core import (
+    QgsApplication,
+    QgsCsException,
+    QgsGeometry,
+    QgsLayerTreeGroup,
+    QgsLayerTreeLayer,
+    QgsMapLayerType,
+    QgsPoint,
+    QgsProject,
+    QgsRasterLayer,
+    QgsRasterRange,
+    QgsRectangle,
+    QgsSettings,
+    QgsTask,
+)
+from qgis.gui import QgsMapCanvas, QgsMapToolPan
 from qgis.PyQt.QtCore import QSize, Qt, QTimer
 from qgis.PyQt.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from qgis.PyQt.QtWidgets import (
-    QAction, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QProgressDialog, QPushButton, QSpinBox, QTabWidget, QTableWidget,
-    QTableWidgetItem, QToolButton, QTreeWidget, QTreeWidgetItem, QSplitter,
-    QVBoxLayout, QWidget, QWidgetAction,
+    QAbstractItemView,
+    QAction,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
 )
-from qgis.core import (
-    QgsApplication, QgsColorRampLegendNodeSettings, QgsColorRampShader,
-    QgsLayerTreeGroup, QgsLayerTreeLayer, QgsMapLayerType, QgsProject,
-    QgsRasterLayer, QgsRasterShader, QgsSettings, QgsTask,
-    QgsSingleBandPseudoColorRenderer,
-)
-from qgis.gui import QgsMapCanvas, QgsMapToolPan
 
-from .distributions import calculate_values, percentile_range
+from .curve_editor import CurveHistogram
+from .distributions import percentile_range
+from .follow import CanvasFollowManager
+from .stretch_ui import TRANSLATIONS, StretchControlsMixin
+from .styling import apply_style, calculate_style
+from .styling import create_renderer as build_renderer
 
 SAMPLE_GRID_SIZE = 512
 HISTOGRAM_BINS = 256
@@ -298,6 +338,10 @@ TEXT = {
 }
 
 
+for _language, _translations in TRANSLATIONS.items():
+    TEXT[_language].update(_translations)
+
+
 def make_palette(colours):
     return [(i / (len(colours) - 1), QColor(c)) for i, c in enumerate(colours)]
 
@@ -396,8 +440,19 @@ PALETTE_CATEGORIES = {
 CATEGORY_IDS = ("all", "geophysics", "scientific", "diverging", "topographic", "classic", "custom")
 
 
-def sampled_raster_statistics(task, provider, band, extent, invalid_range_message):
+def sampled_raster_statistics(task, provider, band, extent, invalid_range_message,mask_wkb=None):
     block = provider.block(band, extent, SAMPLE_GRID_SIZE, SAMPLE_GRID_SIZE)
+    if block is None or not block.isValid():
+        raise ValueError(invalid_range_message)
+    mask_geometry,mask_engine = None,None
+    if mask_wkb:
+        mask_geometry = QgsGeometry()
+        mask_geometry.fromWkb(mask_wkb)
+        if mask_geometry.isEmpty() or not mask_geometry.isGeosValid():
+            raise ValueError(invalid_range_message)
+        mask_engine = QgsGeometry.createGeometryEngine(mask_geometry.constGet())
+        mask_engine.prepareGeometry()
+    xs = [extent.xMinimum()+(column+.5)*extent.width()/SAMPLE_GRID_SIZE for column in range(SAMPLE_GRID_SIZE)]
     values = []
     minimum, maximum = math.inf, -math.inf
     mean, m2, count = 0.0, 0.0, 0
@@ -405,6 +460,10 @@ def sampled_raster_statistics(task, provider, band, extent, invalid_range_messag
         if task.isCanceled():
             return None
         for column in range(SAMPLE_GRID_SIZE):
+            if mask_engine is not None:
+                y = extent.yMaximum()-(row+.5)*extent.height()/SAMPLE_GRID_SIZE
+                if not mask_engine.intersects(QgsPoint(xs[column],y)):
+                    continue
             if block.isNoData(row, column):
                 continue
             value = float(block.value(row, column))
@@ -437,15 +496,24 @@ def sampled_histogram(values, minimum, maximum, bins):
 
 def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
                         manual_minimum, manual_maximum, use_percentiles,
-                        low_percentile, high_percentile, messages):
+                        low_percentile, high_percentile, messages,
+                        sample_extent=None, scope="whole", revision=0,
+                        user_nodata=(), use_source_nodata=True, mask_wkb=None):
     tr = lambda key: messages.get(key, key)
     layer = QgsRasterLayer(source, "GeoRamp", provider_type)
     if not layer.isValid() or band < 1 or band > layer.bandCount():
         raise ValueError(tr("no_raster"))
     provider = layer.dataProvider()
+    provider.setUserNoDataValue(band,[QgsRasterRange(low,high) for low,high in user_nodata])
+    provider.setUseSourceNoDataValue(band,use_source_nodata)
+    extent = layer.extent()
+    if sample_extent is not None:
+        extent = extent.intersect(QgsRectangle(*sample_extent))
+        if extent.isEmpty():
+            raise ValueError(tr("extent_empty"))
     task.setProgress(10)
     sample = sampled_raster_statistics(
-        task, provider, band, layer.extent(), tr("invalid_range")
+        task, provider, band, extent, tr("extent_empty") if sample_extent is not None else tr("invalid_range"),mask_wkb
     )
     if sample is None:
         return None
@@ -482,6 +550,11 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
               (sorted_samples[middle - 1] + sorted_samples[middle]) / 2)
     return {
         "layer_id": layer_id, "band": band,
+        "scope": scope, "revision": revision,
+        "sample_extent": [extent.xMinimum(),extent.yMinimum(),extent.xMaximum(),extent.yMaximum()],
+        "sample_crs": layer.crs().toWkt(),
+        "area_wkb_hex": mask_wkb.hex() if mask_wkb else None,
+        "user_nodata": list(user_nodata), "use_source_nodata": use_source_nodata,
         "data_minimum": data_minimum, "data_maximum": data_maximum,
         "minimum": minimum, "maximum": maximum, "mean": mean,
         "stddev": stddev, "counts": counts, "sample_count": len(values),
@@ -490,68 +563,16 @@ def analyse_raster_task(task, source, provider_type, layer_id, band, manual,
     }
 
 
-class HistogramView(QWidget):
-    """Render at the available size instead of stretching a fixed bitmap."""
-
+class HistogramView(CurveHistogram):
     def __init__(self):
-        super().__init__()
-        self.plot_data = None
-        self.sigma_range = None
-        self.stat_markers = []
-        self.hover = None
-        self.readout = None
-        self.setMouseTracking(True)
-        self.setMinimumSize(320, 220)
-
-    def paintEvent(self, event):
-        if self.plot_data is None:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-        draw_histogram(painter, *self.plot_data, width=self.width(),
-                       height=self.height(), sigma_range=self.sigma_range,
-                       stat_markers=self.stat_markers)
-        if self.hover:
-            x, y = self.hover
-            painter.setPen(QColor("#475569"))
-            painter.drawLine(x, 52, x, self.height() - 58)
-            painter.drawLine(78, y, self.width() - 35, y)
-            painter.setBrush(QColor("#475569"))
-            painter.drawEllipse(x - 3, y - 3, 6, 6)
-        painter.end()
-
-    def mouseMoveEvent(self, event):
-        if self.plot_data is None:
-            return
-        counts, _, minimum, maximum, language = self.plot_data
-        x, y = event.pos().x(), event.pos().y()
-        width, height = self.width() - 113, self.height() - 110
-        if not (78 <= x <= self.width() - 35 and 52 <= y <= self.height() - 58):
-            self.leaveEvent(event)
-            return
-        value = minimum + (x - 78) / width * (maximum - minimum)
-        index = min(len(counts) - 1, int((x - 78) / width * len(counts)))
-        frequency = counts[index]
-        self.hover = (x, self.height() - 58 - round(frequency / max(1, max(counts)) * height))
-        step = (maximum - minimum) / len(counts)
-        label = "Intervalo / muestras" if language == "es" else "Bin / samples"
-        if self.readout:
-            self.readout.setText(f"X: {value:.8g} · Y: {frequency:.2f} · {label}: "
-                                 f"[{minimum + index * step:.6g}, "
-                                 f"{minimum + (index + 1) * step:.6g}] → {counts[index]:,}")
-        self.update()
-
-    def leaveEvent(self, event):
-        self.hover = None
-        if self.readout:
-            self.readout.setText("X: — · Y: —")
-        self.update()
+        super().__init__(draw_histogram)
 
 
-class ColourDialog(QDialog):
-    def __init__(self, iface, parent=None):
+class ColourDialog(StretchControlsMixin, QDialog):
+    def __init__(self, iface, parent=None, follow_manager=None):
         super().__init__(parent)
         self.iface = iface
+        self.follow_manager = follow_manager or CanvasFollowManager(iface)
         self.settings = QgsSettings()
         self.language = self.settings.value(f"{SETTINGS_PREFIX}/language", "es")
         if self.language not in TEXT:
@@ -578,6 +599,7 @@ class ColourDialog(QDialog):
         self.live_timer.timeout.connect(self.start_live_preview)
         self.form_labels = {}
         self._building_language = False
+        self.init_stretch_state()
 
         self.setWindowTitle(self.t("window_title"))
         self.setWindowFlags(
@@ -646,6 +668,7 @@ class ColourDialog(QDialog):
         data_form = QFormLayout()
         self.add_row(data_form, "raster_layer", layer_row)
         self.add_row(data_form, "band", self.band_spin)
+        self.build_extent_controls(data_form)
         multi_row = QHBoxLayout()
         multi_row.addWidget(self.multi_check)
         data_form.addRow("", multi_row)
@@ -712,6 +735,7 @@ class ColourDialog(QDialog):
         for key in ("linear", "normal", "equal_area", "log_method"):
             method = "log_linear" if key == "log_method" else key
             self.method_combo.addItem(self.t(key), method)
+        self.method_combo.addItem(self.t("custom"),"custom")
         self.render_combo.addItem(self.t("continuous"), "continuous")
         self.render_combo.addItem(self.t("discrete"), "discrete")
         self.compact_legend_check = QCheckBox()
@@ -799,7 +823,11 @@ class ColourDialog(QDialog):
 
         config_page = QWidget()
         config_page_layout = QHBoxLayout(config_page)
-        config_page_layout.addWidget(controls_widget, 2)
+        self.controls_scroll = QScrollArea()
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setFrameShape(QFrame.NoFrame)
+        self.controls_scroll.setWidget(controls_widget)
+        config_page_layout.addWidget(self.controls_scroll, 2)
         config_page_layout.addWidget(self.viewer_group, 1)
 
         self.stats_label = QLabel()
@@ -820,9 +848,11 @@ class ColourDialog(QDialog):
         self.sigma_overlay.toggled.connect(self.update_histogram_sigma)
         self.histogram_sigma.valueChanged.connect(self.update_histogram_sigma)
         self.table = QTableWidget(0, 4)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
         preview_layout = QVBoxLayout()
         preview_layout.addWidget(self.stats_label)
+        self.build_curve_controls(preview_layout)
         sigma_row = QHBoxLayout()
         sigma_row.addWidget(self.sigma_overlay)
         sigma_row.addWidget(self.histogram_sigma)
@@ -856,7 +886,7 @@ class ColourDialog(QDialog):
         main_layout.addWidget(self.buttons)
 
         self.layer_combo.currentIndexChanged.connect(self.update_band)
-        self.method_combo.currentIndexChanged.connect(self.update_controls)
+        self.method_combo.currentIndexChanged.connect(self.distribution_changed)
         self.manual_check.toggled.connect(self.update_controls)
         self.percentile_check.toggled.connect(self.update_controls)
         self.compact_legend_check.toggled.connect(self.compact_legend_changed)
@@ -976,7 +1006,7 @@ class ColourDialog(QDialog):
         self.settings.setValue(f"{SETTINGS_PREFIX}/language", self.language)
         self.settings.setValue(f"{SETTINGS_PREFIX}/palette", self.palette_combo.currentData())
         self.settings.setValue(f"{SETTINGS_PREFIX}/reverse", self.reverse_check.isChecked())
-        self.settings.setValue(f"{SETTINGS_PREFIX}/method", self.method_combo.currentData())
+        self.settings.setValue(f"{SETTINGS_PREFIX}/method", self._base_method if self.method_combo.currentData()=="custom" else self.method_combo.currentData())
         self.settings.setValue(f"{SETTINGS_PREFIX}/render", self.render_combo.currentData())
         self.settings.setValue(f"{SETTINGS_PREFIX}/compact_legend", self.compact_legend_check.isChecked())
         self.settings.setValue(f"{SETTINGS_PREFIX}/bins", self.zones_spin.value())
@@ -1047,6 +1077,7 @@ class ColourDialog(QDialog):
             "normal": self.t("normal"),
             "equal_area": self.t("equal_area"),
             "log_linear": self.t("log_method"),
+            "custom": self.t("custom"),
         })
         self.update_combo_text(self.render_combo, {
             "continuous": self.t("continuous"),
@@ -1060,6 +1091,7 @@ class ColourDialog(QDialog):
             category: self.t(f"category_{category}") for category in CATEGORY_IDS
         })
         self.refresh_palette_list(self.palette_combo.currentData())
+        self.translate_stretch_controls()
         self.update_controls()
 
     @staticmethod
@@ -1240,14 +1272,27 @@ class ColourDialog(QDialog):
     def update_band(self):
         layer = self.current_layer()
         self.band_spin.setMaximum(max(1, layer.bandCount() if layer else 1))
+        self.last_analysis = None
+        if layer and not self._stretch_updating:
+            self.restore_stretch_style(layer)
 
     def update_controls(self):
         method = self.method_combo.currentData()
         if method is None:
             return
+        if method!="custom":
+            self._base_method = method
+            if hasattr(self,"edit_curve_check"):
+                self.edit_curve_check.blockSignals(True)
+                self.edit_curve_check.setChecked(False)
+                self.edit_curve_check.blockSignals(False)
+                self.histogram_label.editable = False
+        elif hasattr(self,"edit_curve_check"):
+            self.histogram_label.editable = self.edit_curve_check.isChecked()
         self.method_help.setText(self.t(f"{method}_help") if method != "log_linear" else self.t("log_help"))
         self.sigma_spin.setEnabled(method == "normal")
         self.log_shift.setEnabled(method == "log_linear")
+        self.zones_spin.setEnabled(method!="custom" or self.render_combo.currentData()=="discrete")
         enabled = self.manual_check.isChecked()
         self.minimum_spin.setEnabled(enabled)
         self.maximum_spin.setEnabled(enabled)
@@ -1266,6 +1311,10 @@ class ColourDialog(QDialog):
         )
 
     def queue_live_analysis(self, unused=None):
+        if self._stretch_updating or self._closed:
+            return
+        self._revision += 1
+        self.last_analysis = None
         if not self.isVisible():
             return
         self.viewer_message.setText(self.t("processing"))
@@ -1282,7 +1331,10 @@ class ColourDialog(QDialog):
             self.queue_live_analysis()
             return
         try:
-            self.show_live_preview(self.calculate_breaks(self.last_analysis))
+            calculated = self.calculate_breaks(self.last_analysis)
+            self.show_live_preview(calculated)
+            self.show_preview(calculated,activate=False)
+            self.update_controls()
         except ValueError:
             self.queue_live_analysis()
 
@@ -1382,6 +1434,8 @@ class ColourDialog(QDialog):
         self.start_calculation("limits")
 
     def start_calculation(self, action, layer_id=None):
+        if self._closed:
+            return
         layer = (
             QgsProject.instance().mapLayer(layer_id)
             if layer_id is not None else self.current_layer()
@@ -1405,18 +1459,29 @@ class ColourDialog(QDialog):
             action != "limits" and self.percentile_check.isChecked()
             and not self.manual_check.isChecked()
         )
-        if use_percentiles:
-            if not 0 <= self.low_percentile_spin.value() < self.high_percentile_spin.value() <= 100:
-                if action == "live":
-                    self.viewer_message.setText(self.t("invalid_percentiles"))
-                    self.viewer_message.show()
-                    return
-                return QMessageBox.warning(self, self.t("preview_failed"), self.t("invalid_percentiles"))
+        if use_percentiles and not 0 <= self.low_percentile_spin.value() < self.high_percentile_spin.value() <= 100:
+            if action == "live":
+                self.viewer_message.setText(self.t("invalid_percentiles"))
+                self.viewer_message.show()
+                return
+            return QMessageBox.warning(self, self.t("preview_failed"), self.t("invalid_percentiles"))
 
         messages = {key: self.t(key) for key in (
             "no_raster", "invalid_range", "invalid_percentiles",
-            "invalid_percentile_range", "histogram_failed"
+            "invalid_percentile_range", "histogram_failed", "extent_empty"
         )}
+        try:
+            sample_extent,mask_wkb = self.sampling_request(layer)
+        except (ValueError,QgsCsException,RuntimeError) as error:
+            if action=="multi_apply":
+                self.multi_apply_failures.append(str(error))
+                QTimer.singleShot(0,self.start_next_multi_apply)
+                return
+            if action=="live":
+                self.viewer_message.setText(str(error))
+                self.viewer_message.show()
+                return
+            return QMessageBox.warning(self,self.t("task_failed"),str(error))
         self.pending_action = action
         if action != "live":
             progress_text = self.t("processing")
@@ -1439,6 +1504,10 @@ class ColourDialog(QDialog):
             use_percentiles=use_percentiles,
             low_percentile=self.low_percentile_spin.value(),
             high_percentile=self.high_percentile_spin.value(), messages=messages,
+            sample_extent=sample_extent,scope=self.extent_combo.currentData(),revision=self._revision,
+            mask_wkb=mask_wkb,
+            user_nodata=[(item.min(),item.max()) for item in layer.dataProvider().userNoDataValues(self.band_spin.value())],
+            use_source_nodata=layer.dataProvider().useSourceNoDataValue(self.band_spin.value()),
         )
         if self.progress_dialog:
             self.active_task.progressChanged.connect(
@@ -1457,6 +1526,8 @@ class ColourDialog(QDialog):
         if self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
+        if self._closed:
+            return
         if task and task.isCanceled():
             if action == "multi_apply":
                 self.multi_apply_queue.clear()
@@ -1483,6 +1554,12 @@ class ColourDialog(QDialog):
             if action == "live":
                 return
             return QMessageBox.warning(self, self.t("task_failed"), self.t("histogram_failed"))
+        if result.get("revision",self._revision)!=self._revision:
+            if queued_action:
+                QTimer.singleShot(0,lambda queued=queued_action:self.start_calculation(*queued))
+            else:
+                self.queue_live_analysis()
+            return
         self.last_analysis = result
         if action == "limits":
             self.minimum_spin.setValue(result["data_minimum"])
@@ -1510,37 +1587,14 @@ class ColourDialog(QDialog):
             QTimer.singleShot(0, lambda queued=queued_action: self.start_calculation(*queued))
 
     def calculate_breaks(self, result):
-        minimum, maximum, counts = result["minimum"], result["maximum"], result["counts"]
-        bins = self.zones_spin.value()
-        method = self.method_combo.currentData()
-        if method == "equal_area":
-            edges = calculate_values(
-                [i / bins for i in range(bins + 1)], method, minimum, maximum,
-                result["mean"], result["stddev"], counts, self.sigma_spin.value(),
-                self.log_shift.isChecked(), translate=self.t,
-            )
-            values = edges[1:]
-        else:
-            positions = (
-                [(i + 1) / bins for i in range(bins)]
-                if self.render_combo.currentData() == "discrete"
-                else [i / (bins - 1) for i in range(bins)]
-            )
-            values = calculate_values(
-                positions, method, minimum, maximum,
-                result["mean"], result["stddev"], counts, self.sigma_spin.value(),
-                self.log_shift.isChecked(), translate=self.t,
-            )
-            edges = [minimum] + values if self.render_combo.currentData() == "discrete" else values
-        colours = [interpolate_colour(self.active_stops(), i / (bins - 1)) for i in range(bins)]
-        return result, values, colours, edges
+        return calculate_style(result, self.style_parameters(), translate=self.t)
 
     def preview(self):
         self.start_calculation("preview")
 
     def show_preview(self, calculated, activate=True):
         self._histogram_calculated = calculated
-        result, values, colours, edges = calculated
+        result, values, colours, _edges = calculated
         minimum, maximum, counts = result["minimum"], result["maximum"], result["counts"]
         stats_text = self.t("stats").format(
             minimum=minimum, maximum=maximum, mean=result["mean"], stddev=result["stddev"]
@@ -1567,7 +1621,20 @@ class ColourDialog(QDialog):
         if len(peaks) > 1:
             extra += f" ({len(peaks)} " + ("intervalos empatados" if es else "tied bins") + ")"
         self.stats_label.setText(stats_text + extra)
-        self.histogram_label.plot_data = (counts, values, minimum, maximum, self.language)
+        extent_text = self.t("extent_sample").format(mode=self.t("extent_"+result.get("scope","whole")),
+            extent=", ".join(f"{v:.6g}" for v in result.get("sample_extent",[])))
+        self.stats_label.setText(self.stats_label.text()+"\n"+extent_text)
+        # Keep original sampled tails visible so min/max can be moved on the plot.
+        plot_min,plot_max = min(result["data_minimum"],minimum),max(result["data_maximum"],maximum)
+        samples = result.get("sorted_samples",[])
+        histogram_key = (id(samples),plot_min,plot_max)
+        if getattr(self,"_histogram_counts_key",None)!=histogram_key:
+            self._histogram_counts_cache = sampled_histogram(samples,plot_min,plot_max,HISTOGRAM_BINS)
+            self._histogram_counts_key = histogram_key
+        plot_counts = self._histogram_counts_cache
+        self.histogram_label.plot_data = (plot_counts, values, plot_min, plot_max, self.language)
+        self.histogram_label.transfer = result["transfer"]
+        self.histogram_label.controls = [(minimum+x*(maximum-minimum),y) for x,y in self.custom_curve]
         self.update_histogram_sigma()
         self.histogram_label.update()
         self.table.setRowCount(len(values))
@@ -1654,38 +1721,7 @@ class ColourDialog(QDialog):
         QMessageBox.information(self, self.t("window_title"), message)
 
     def create_renderer(self, layer, calculated):
-        result, values, colours, _ = calculated
-        minimum, maximum = result["minimum"], result["maximum"]
-        items = [QgsColorRampShader.ColorRampItem(v, c, f"{v:.8g}") for v, c in zip(values, colours)]
-        discrete = self.render_combo.currentData() == "discrete"
-        if discrete and items:
-            # Discrete entries are upper bounds. Extend the final zone so
-            # percentile/manual limits saturate outliers instead of hiding them.
-            # The first zone already includes all values below its upper bound.
-            items[-1] = QgsColorRampShader.ColorRampItem(
-                float("inf"), colours[-1], f"{maximum:.8g}"
-            )
-        ramp = QgsColorRampShader()
-        ramp.setClip(False)
-        ramp.setColorRampType(
-            QgsColorRampShader.Discrete
-            if discrete
-            else QgsColorRampShader.Interpolated
-        )
-        ramp.setColorRampItemList(items)
-        legend_settings = QgsColorRampLegendNodeSettings()
-        legend_settings.setUseContinuousLegend(self.compact_legend_check.isChecked())
-        legend_settings.setMinimumLabel(f"{minimum:.8g}")
-        legend_settings.setMaximumLabel(f"{maximum:.8g}")
-        ramp.setLegendSettings(legend_settings)
-        shader = QgsRasterShader()
-        shader.setRasterShaderFunction(ramp)
-        renderer = QgsSingleBandPseudoColorRenderer(
-            layer.dataProvider(), result["band"], shader
-        )
-        renderer.setClassificationMin(minimum)
-        renderer.setClassificationMax(maximum)
-        return renderer
+        return build_renderer(layer, calculated, self.style_parameters())
 
     def show_live_preview(self, calculated):
         result = calculated[0]
@@ -1709,6 +1745,9 @@ class ColourDialog(QDialog):
             self.viewer_canvas.setLayers([self.preview_layer])
             self.viewer_canvas.setExtent(self.preview_layer.extent())
         self.preview_layer.setRenderer(self.create_renderer(self.preview_layer, calculated))
+        provider = source_layer.dataProvider()
+        self.preview_layer.dataProvider().setUserNoDataValue(result["band"],provider.userNoDataValues(result["band"]))
+        self.preview_layer.dataProvider().setUseSourceNoDataValue(result["band"],provider.useSourceNoDataValue(result["band"]))
         self.preview_layer.triggerRepaint()
         self.viewer_message.hide()
         self.viewer_canvas.refresh()
@@ -1718,10 +1757,10 @@ class ColourDialog(QDialog):
         layer = QgsProject.instance().mapLayer(result["layer_id"])
         if not isinstance(layer, QgsRasterLayer):
             return QMessageBox.warning(self, self.t("apply_failed"), self.t("no_raster"))
-        renderer = self.create_renderer(layer, calculated)
-        layer.setRenderer(renderer)
-        layer.emitStyleChanged()
-        layer.triggerRepaint()
+        self.follow_manager.unwatch(layer.id())
+        state = apply_style(layer,calculated,self.style_parameters())
+        if result.get("scope")=="follow":
+            self.follow_manager.watch(layer,state)
         self.iface.layerTreeView().refreshLayerSymbology(layer.id())
         self.save_settings()
 
@@ -1751,9 +1790,12 @@ class ColourDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, self.t("import_style"), "", self.t("style_filter"))
         if not path:
             return
+        self.follow_manager.unwatch(layer.id())
         message, success = layer.loadNamedStyle(path)
         if not success:
             return QMessageBox.warning(self, self.t("style_failed"), message)
+        self.restore_stretch_style(layer)
+        self.queue_live_analysis()
         layer.triggerRepaint()
         self.iface.layerTreeView().refreshLayerSymbology(layer.id())
         QMessageBox.information(self, self.t("window_title"), self.t("style_imported"))
@@ -1773,10 +1815,23 @@ class ColourDialog(QDialog):
         QMessageBox.information(self, self.t("window_title"), self.t("style_exported"))
 
     def closeEvent(self, event):
+        self.finish_polygon_tool(show=False)
+        self._closed = True
+        self.live_timer.stop()
+        self.disconnect_extent_canvas()
+        self.viewer_canvas.stopRendering()
+        self.viewer_canvas.setLayers([])
+        self.preview_layer = None
+        self.preview_source_key = None
         if self.active_task:
             self.active_task.cancel()
         self.save_settings()
         super().closeEvent(event)
+
+    def showEvent(self,event):
+        self._closed = False
+        self.connect_extent_canvas()
+        super().showEvent(event)
 
 
 def interpolate_colour(stops, position):
@@ -1895,8 +1950,11 @@ def read_palette(path, translate=None):
 class GeoRampPlugin:
     def __init__(self, iface):
         self.iface, self.action, self.dialog = iface, None, None
+        self.follow_manager = None
+        self.stop_action = None
 
     def initGui(self):
+        self.follow_manager = CanvasFollowManager(self.iface)
         self.action = QAction(
             QIcon(os.path.join(os.path.dirname(__file__), "icon.png")),
             TEXT["es"]["menu"],
@@ -1905,14 +1963,24 @@ class GeoRampPlugin:
         self.action.triggered.connect(self.run)
         self.iface.addPluginToRasterMenu(TEXT["es"]["menu"], self.action)
         self.iface.addToolBarIcon(self.action)
+        self.stop_action = QAction("GeoRamp — Stop automatic canvas stretching",self.iface.mainWindow())
+        self.stop_action.triggered.connect(self.follow_manager.stop)
+        self.iface.addPluginToRasterMenu(TEXT["es"]["menu"],self.stop_action)
+        self.follow_manager.restore_project()
 
     def unload(self):
+        if self.dialog is not None:
+            self.dialog.close()
+        if self.follow_manager is not None:
+            self.follow_manager.shutdown()
+        if self.stop_action is not None:
+            self.iface.removePluginRasterMenu(TEXT["es"]["menu"],self.stop_action)
         self.iface.removePluginRasterMenu(TEXT["es"]["menu"], self.action)
         self.iface.removeToolBarIcon(self.action)
 
     def run(self):
         if self.dialog is None:
-            self.dialog = ColourDialog(self.iface, self.iface.mainWindow())
+            self.dialog = ColourDialog(self.iface, self.iface.mainWindow(),self.follow_manager)
         self.dialog.refresh_layers()
         self.dialog.show()
         self.dialog.raise_()

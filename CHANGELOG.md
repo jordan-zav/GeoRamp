@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.0 — Extent stretches and editable transfer curves (local development)
+
+- Statistics from the whole raster, a fixed map-canvas extent, a following
+  canvas extent, or a custom/drawn rectangle; per-layer CRS transformation.
+- Histogram overlay of the rendered input-to-colour transfer on a separate
+  percentage axis, with editable monotone control points, min/max handles,
+  exact numeric entry, deletion and keyboard movement.
+- Continuous manual curves include palette-stop crossings for exact shader
+  interpolation; discrete rendering uses inverse-transfer upper bounds.
+- Portable curve/extent metadata in QML custom properties; native shader
+  colours remain usable in QGIS without GeoRamp.
+- Source and user-defined NoData rules retained in statistics and preview.
+- Applied layers follow canvas changes independently of the dialog, with
+  per-layer styles, explicit stop controls and cancellation of outdated jobs.
+- Polygon layers, selections, holes and drawn polygons define actual sample
+  masks; masked areas and editable curves survive QML round trips.
+- Visible Windows QGIS desktop review uses a public Terrain Tiles elevation
+  tile in addition to synthetic GUI tests; original raster hashes are preserved.
+- Scrollable settings keep polygon controls accessible in shorter windows.
+- Local experimental build; not yet a public release.
+
 ## 1.0.0 — Primera versión para publicación
 
 - Selección multicapa alfabética, por arrastre y por grupos de QGIS.

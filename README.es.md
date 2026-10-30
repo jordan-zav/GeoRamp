@@ -22,8 +22,8 @@ y no sustituye el análisis espacial con CRS explícito.
 
 ## Instalar y empezar en QGIS
 
-Requiere QGIS 3.34 o superior. La fuente del complemento declara 1.0.0; la
-publicación en el repositorio oficial de complementos está pendiente.
+Requiere QGIS 3.34 o superior. La versión local 1.1.0 es experimental y todavía
+no se ha publicado; parte de la base 1.0.0. Se probó con QGIS 3.44.12.
 
 1. Obtén un ZIP desde [Releases](https://github.com/jordan-zav/GeoRamp/releases)
    cuando esté disponible, o genéralo con el empaquetador.
@@ -44,6 +44,61 @@ Incluye distribuciones lineal, normal, igual área/histograma y log-lineal;
 continua o discreta. El histograma muestra estadísticas y cobertura alrededor
 de la media. Admite selección múltiple y vista previa de la primera capa.
 La interfaz se ofrece en español e inglés.
+
+## Estiramiento por extensión y curva editable
+
+En Configuración, Extensión estadística permite elegir el ráster completo,
+el lienzo actual fijo, seguir el lienzo, un rectángulo o un área poligonal. Puedes
+escribir las coordenadas o dibujar el rectángulo en el mapa principal con el
+selector nativo de QGIS. La extensión se transforma al CRS de cada ráster y se
+intersecta con su cobertura; los rectángulos reproyectados usan envolventes.
+Los polígonos se transforman como geometrías y enmascaran las muestras exteriores
+y sus huecos. Se admiten capas, selecciones de polígonos y dibujo sobre el mapa.
+No se recortan ni modifican los valores originales del ráster.
+
+Aplicar en modo Seguir el lienzo activa el estiramiento automático de las capas
+del proyecto. Mover o ampliar el mapa actualiza sus renderizadores incluso al
+cerrar GeoRamp. Se detiene con el botón de la ventana o desde el menú Ráster;
+cambiar el estilo por otro medio también detiene el seguimiento de esa capa.
+Cada capa conserva su propia rampa y parámetros. El muestreo es una grilla determinista
+de 512 por 512 sobre el área seleccionada, no estadísticas de todos los píxeles.
+Los límites manuales tienen prioridad hasta que los desactives.
+
+En Histograma y cortes aparece la transferencia entrada → posición de color en
+verde, con un eje porcentual derecho separado de la frecuencia del histograma.
+Activa Editar curva de estiramiento para manipularla:
+
+- Doble clic añade un punto; cerca del borde inferior/superior define mín./máx.
+- Arrastra los nodos. No pueden cruzarse ni invertir el orden del estiramiento.
+- Doble clic en un nodo o Intro abre sus valores numéricos; las flechas lo mueven.
+- Clic derecho o Supr elimina puntos interiores. Restablecer curva recupera la
+  distribución integrada anterior.
+
+En continuo se conservan los nodos exactos de curva y rampa. Los intervalos
+configuran la representación discreta. Se admiten hasta 64 puntos monótonos,
+normalizados dentro de los límites; otra área puede reescalar su dominio.
+Aplicar confirma los cambios; cerrar la vista previa no los aplica.
+
+QML guarda el renderizador nativo y metadatos para recuperar la edición,
+incluidos curva, límites, rampa, banda, NoData y área estadística. Al importar,
+el área se restaura como extensión fija. QGIS representa el estilo sin requerir
+GeoRamp; la extensión VS Code conserva su alcance anterior y no incorpora los
+nuevos controles. Las [capturas y detalles de validación](README.md#extent-stretches-and-editable-curves)
+están en la documentación inglesa.
+
+Validación ejecutada: 21 pruebas Python, Ruff y GUI empaquetada en QGIS 3.44.12
+con ráster sintético y perfil aislado. Se comprobaron selección/dibujo de área,
+CRS, seguimiento, edición con ratón/teclado, QML, transparencia NoData, bandas,
+tareas sucesivas, varias capas seguidas con rampas independientes, máscaras con
+huecos y descarga del plugin durante un cálculo. El SHA-256 del ráster
+no cambió. No se modificó el perfil real del usuario ni se usaron datos privados.
+
+También se instaló el ZIP con el gestor de complementos en una sesión normal y
+visible de QGIS para Windows, con perfil temporal. Se probó un DEM real público
+de Terrain Tiles, tesela S13W073, y se revisaron las capturas. Las interacciones
+fueron automatizadas; no se presenta como aceptación de un operador humano ni
+como equivalencia exacta con software comercial. El [informe de validación](docs/VALIDATION_1_1_0.md)
+detalla el alcance, fuentes y evidencias.
 
 Las tablas CSV, TXT, TBL, ZON, CLR y LUT aceptan filas R,G,B o posición,R,G,B,
 con separadores de coma, punto y coma o espacios. RGB debe estar entre 0 y 255;

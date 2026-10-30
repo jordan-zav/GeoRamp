@@ -11,6 +11,13 @@ Plugin para QGIS 3.34 o superior que aplica rampas RGB y distribuciones estadís
 - Inversión de rampa y límites automáticos o manuales.
 - Sigma configurable para Normal y desplazamiento opcional para Log-Linear.
 - Histograma, estadísticas y tabla de cortes antes de aplicar.
+- Extensión estadística del ráster completo, lienzo fijo, seguimiento del lienzo
+  o rectángulo definido por coordenadas o dibujado en el mapa principal.
+- Áreas poligonales desde capas, selecciones o dibujo libre; se excluyen los
+  huecos y las muestras exteriores a la geometría real.
+- Curva de transferencia superpuesta al histograma con eje porcentual propio,
+  nodos editables, límites mín./máx., entrada numérica y controles de teclado.
+- Curvas monótonas de hasta 64 nodos y metadatos de edición recuperables desde QML.
 - Visor ráster integrado con actualización en tiempo real al cambiar los parámetros.
 - Veintisiete rampas integradas, incluidas rampas geofísicas, científicas, divergentes, topográficas y batimétricas.
 - Buscador y categorías para navegar el catálogo de rampas.
@@ -42,7 +49,41 @@ Se aceptan filas R,G,B o posición,R,G,B, separadas por comas, punto y coma o es
 
 ## Instalación
 
-Instala `georamp-1.0.0.zip` desde Complementos → Administrar e instalar complementos → Instalar a partir de ZIP. Requiere QGIS 3.34 o superior.
+Instala georamp-1.1.0.zip desde Complementos → Administrar e instalar complementos → Instalar a partir de ZIP. Requiere QGIS 3.34 o superior. Esta versión es experimental local; se probó en QGIS 3.44.12.
+
+## Extensión y edición de curva
+
+La selección de área afecta a estadísticas y límites, no recorta el ráster.
+Las coordenadas se transforman al CRS de cada capa mediante QGIS y se usa su
+envolvente rectangular. Las áreas vacías, sin variación o sin datos válidos
+producen un aviso; no se sustituyen silenciosamente por la cobertura completa.
+El muestreo es una grilla de 512 por 512 sobre esa área, no un recorrido completo.
+
+Aplicar en modo Seguir el lienzo activa el estiramiento automático de las capas
+del proyecto, incluso después de cerrar la ventana. El botón Detener o la acción
+del menú Ráster lo desactiva. Cada capa mantiene su rampa, banda y parámetros.
+Cambiar su estilo externamente también detiene el seguimiento. Los límites manuales
+conservan prioridad hasta que se desactiven.
+
+Puedes elegir un área poligonal desde una capa, usar solo los objetos
+seleccionados o dibujarla con clics en el mapa. Clic derecho o Intro termina;
+Esc cancela y Retroceso deshace un vértice. Las coordenadas se transforman al CRS
+de cada ráster antes de muestrear; no basta con tomar su caja envolvente. QML
+guarda la geometría del área como una instantánea, sin sus atributos.
+
+La curva verde usa el eje derecho de posición de color; el histograma conserva
+el eje izquierdo de frecuencia. Activa Editar curva de estiramiento para añadir
+puntos con doble clic y arrastrarlos. Doble clic cerca de abajo/arriba ajusta
+mín./máx.; doble clic en un nodo o Intro abre valores exactos. Las flechas mueven
+el nodo seleccionado; Supr o clic derecho elimina nodos interiores. Los nodos
+no pueden cruzarse ni invertir el orden de color. Restablecer curva recupera
+la distribución integrada anterior.
+
+Las curvas continuas usan los nodos de transferencia y cruces de la rampa;
+el número de intervalos controla las curvas discretas. QML conserva colores
+nativos, transparencia de rangos NoData y metadatos de edición. GeoRamp puede
+recuperar la curva al importar el estilo; el área guardada se restaura fija.
+Sin GeoRamp, QGIS sigue pudiendo representar el estilo nativo.
 
 ## Alcance
 

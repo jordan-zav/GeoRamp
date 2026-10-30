@@ -1,11 +1,11 @@
 [general]
 name=GeoRamp
-description=Scientific colour ramps, interactive histograms and multi-layer raster styling for QGIS.
-version=1.0.0
+description=Scientific colour ramps, automatic canvas stretches, polygon areas and editable histogram curves for QGIS.
+version=1.1.0
 qgisMinimumVersion=3.34
 author=Jordan Zavaleta
 email=jordanzav@gisgeo.dev
-about=Style rasters with 27 scientific and geophysical colour ramps, live previews, group-based multi-layer selection and interactive histograms. Inspect sample statistics and observed sigma coverage, apply percentile stretches with saturated endpoints, import RGB tables and exchange QML styles. Includes English and Spanish interfaces and NoData-aware sampling.
+about=Style rasters with 27 scientific/geophysical ramps. Stretch from whole rasters, fixed/following canvas extents, rectangles or polygon masks with holes and feature selections. Applied layers can follow the canvas after the dialog closes, with explicit stop controls. Edit histogram transfer curves with draggable/numeric points and exchange native QML styles with editing/area metadata. English/Spanish GUI with NoData-aware sampling. Version 1.1.0 is local experimental development.
 category=Raster
 icon=icon.png
 repository=https://github.com/jordan-zav/GeoRamp
@@ -13,7 +13,7 @@ tracker=https://github.com/jordan-zav/GeoRamp/issues
 homepage=https://github.com/jordan-zav/GeoRamp
 tags=raster, color ramp, geophysics, histogram, palette, visualization
 license=GPL-3.0-or-later
-experimental=False
+experimental=True
 deprecated=False
 hasProcessingProvider=False
-changelog=1.0.0 - Initial submission: scientific colour ramps, live raster preview, group-based multi-layer selection, interactive histogram statistics and sigma coverage, percentile stretches with saturated endpoints, RGB table import and QML styles.
+changelog=1.1.0 - Automatic applied-layer canvas stretches, rectangle/polygon sampling areas, editable histogram curves, QML editing metadata and NoData transparency. Tested with synthetic rasters and a public DEM in the visible QGIS desktop. Local experimental build. 1.0.0 - Initial submission.
